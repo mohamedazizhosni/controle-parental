@@ -70,6 +70,7 @@ async def get_history(child_id: str):
     if not ObjectId.is_valid(child_id):
         raise HTTPException(400, "Invalid child id")
 
+    # child_id est stocké comme string dans la base de données
     entries = await db.history.find(
         {"child_id": child_id}
     ).sort("timestamp", -1).limit(200).to_list(length=200)
