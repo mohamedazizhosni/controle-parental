@@ -1,0 +1,72 @@
+services:
+  mongodb:
+    image: mongo:6.0
+    container_name: parental_mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASS}
+      MONGO_INITDB_DATABASE: parental_db
+    networks:
+      - parental_net
+
+  backend:
+    build: ./backend
+    container_name: parental_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mongodb
+      - squid
+      - ia
+    environment:
+      MONGO_URL: mongodb://${MONGO_USER}:${MONGO_PASS}@mongodb:27017
+      SECRET_KEY: ${JWT_SECRET}
+    volumes:
+      - ./backend:/app
+      - ./proxy/ssl:/app/proxy/ssl
+      - ia_config:/app/ia_config 
+    networks:
+      - parental_net
+
+  squid:
+    build: ./proxy
+    container_name: parental_squid
+    restart: unless-stopped
+    ports:
+      - "3128:3128"
+    depends_on:
+      - ia
+    volumes:
+      - ./proxy/squid.conf:/etc/squid/squid.conf 
+      - squid_logs:/var/log/squid
+      - squid_cache:/var/spool/squid
+      - ia_config:/app/ia_config 
+    networks:
+      - parental_net
+
+  ia:
+    build: ./ia
+    container_name: parental_ia
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    volumes:
+      - ia_config:/app/ia_config
+    networks:
+      - parental_net
+
+networks:
+  parental_net:
+    driver: bridge
+
+volumes:
+  mongo_data:
+  squid_logs:
+  squid_cache:
+  ia_config:

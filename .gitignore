@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+.env
+.venv
+venv/
+*.log
+
+# Docker
+*.pid
+
+# Flutter (Windows)
+parent_app_windows/build/
+parent_app_windows/.dart_tool/
+parent_app_windows/.flutter-plugins
+parent_app_windows/.flutter-plugins-dependencies
+parent_app_windows/linux/
+parent_app_windows/macos/
+parent_app_windows/web/
+parent_app_windows/windows/flutter/
+parent_app_windows/windows/CMakeFiles/
+agent_windows/build/
+agent_windows/.dart_tool/
+agent_windows/.flutter-plugins
+agent_windows/.flutter-plugins-dependencies
+agent_windows/linux/
+agent_windows/macos/
+agent_windows/web/
+agent_windows/windows/flutter/
+agent_windows/windows/CMakeFiles/
+
+# MongoDB data
+mongo_data/
+
+# Squid logs
+squid_logs/
+squid_cache/
+
+# SSL (ne pas versionner les certificats ?)
+proxy/ssl/*.key
