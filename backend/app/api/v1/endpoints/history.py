@@ -20,7 +20,7 @@ async def log_history(log: HistoryLog, request: Request):
     """Appelé par le proxy Squid pour enregistrer une navigation (HTTP et HTTPS)."""
     db = get_db()
 
-    # Récupérer l'IP source depuis la requête (plus fiable)
+    # Récupérer l'IP source depuis la requête
     source_ip = log.ip
     
     # Si l'IP est vide ou localhost, essayer d'autres sources
@@ -31,11 +31,11 @@ async def log_history(log: HistoryLog, request: Request):
         elif "x-real-ip" in request.headers:
             source_ip = request.headers["x-real-ip"]
 
-    # Méthode 1 : Trouver l'appareil via mapping IP
-    mapping = await db.ip_mapping.find_one({"ip": source_ip})
-    
     device = None
     child_id = None
+    
+    # Méthode 1 : Trouver l'appareil via mapping IP (le plus fiable)
+    mapping = await db.ip_mapping.find_one({"ip": source_ip})
     
     if mapping:
         device_name = mapping["device_name"]
@@ -61,10 +61,38 @@ async def log_history(log: HistoryLog, request: Request):
             )
     
     if not device:
+        # Aucun appareil trouvé - enregistrer quand même avec info de debug
+        entry = {
+            "child_id": None,
+            "url": log.url,
+            "protocol": "HTTPS" if log.url.startswith("https://") else "HTTP",
+            "title": "",
+            "category": "unknown",
+            "blocked": log.blocked,
+            "timestamp": datetime.utcnow(),
+            "source_ip": source_ip,
+            "device_name": None,
+            "error": "no device mapping found"
+        }
+        await db.history.insert_one(entry)
         return {"message": "no device found", "ip": source_ip}
 
     child_id = device.get("active_child_id")
     if not child_id:
+        # Pas d'enfant actif - possiblement mode parent
+        entry = {
+            "child_id": None,
+            "url": log.url,
+            "protocol": "HTTPS" if log.url.startswith("https://") else "HTTP",
+            "title": "",
+            "category": "unknown",
+            "blocked": log.blocked,
+            "timestamp": datetime.utcnow(),
+            "source_ip": source_ip,
+            "device_name": device.get("device_name"),
+            "error": "no active child"
+        }
+        await db.history.insert_one(entry)
         return {"message": "no active child", "device": device.get("device_name")}
 
     # Déterminer la catégorie depuis l'URL
@@ -93,10 +121,11 @@ async def log_history(log: HistoryLog, request: Request):
         "category": category,
         "blocked": log.blocked,
         "timestamp": datetime.utcnow(),
-        "source_ip": source_ip  # Ajouter l'IP source pour debug
+        "source_ip": source_ip,
+        "device_name": device.get("device_name")
     }
     await db.history.insert_one(entry)
-    return {"message": "ok", "child_id": child_id}
+    return {"message": "ok", "child_id": child_id, "device_name": device.get("device_name")}
 
 
 @router.get("/all")

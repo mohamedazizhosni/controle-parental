@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from bson import ObjectId
 from ....db.mongodb import get_db
 from .auth import get_current_user
+from .notifications import send_notification_to_parent  # ✅ AJOUT
 
 router = APIRouter(prefix="/session", tags=["Session"])
 
@@ -58,13 +59,21 @@ async def session_ping(device_name: str, elapsed_seconds: int):
     limit_seconds = limit_minutes * 60
     if session["total_seconds"] >= limit_seconds:
         await db.devices.update_one({"device_name": device_name}, {"$set": {"enabled": False}})
-        await db.alerts.insert_one({
-            "child_id": child_id,
-            "message": f"Temps de connexion quotidien dépassé ({limit_minutes} minutes)",
-            "alert_type": "time_limit_exceeded",
-            "read": False,
-            "timestamp": datetime.utcnow()
-        })
+        
+        # ✅ AJOUT : Envoyer notification WebSocket
+        await send_notification_to_parent(
+            db,
+            child_id,
+            "time_limit_exceeded",
+            f"⏰ Temps de connexion quotidien dépassé ({limit_minutes} minutes)",
+            {
+                "device_name": device_name,
+                "child_name": profile.get("name"),
+                "limit_minutes": limit_minutes,
+                "used_minutes": round(session["total_seconds"] / 60, 1)
+            }
+        )
+        
         return {"should_disconnect": True, "message": "Daily time limit exceeded"}
 
     return {"should_disconnect": False,

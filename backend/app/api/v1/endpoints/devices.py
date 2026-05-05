@@ -4,6 +4,7 @@ from bson import ObjectId
 import os
 import json
 from ....db.mongodb import get_db
+from ....core.security import verify_password
 
 router = APIRouter(prefix="/devices", tags=["Devices"])
 
@@ -52,10 +53,11 @@ async def verify_parent_pin(device_name: str, parent_pin: str, request: Request)
     if not children:
         raise HTTPException(404, "No children found for parent")
     child = children[0]
-    stored_pin = child.get("parent_pin")
-    if stored_pin is None or stored_pin == "":
+    stored_pin_hash = child.get("parent_pin")
+    if stored_pin_hash is None or stored_pin_hash == "":
         return {"valid": False, "message": "No parent PIN set"}
-    if parent_pin == stored_pin:
+    # Vérifier avec bcrypt
+    if verify_password(parent_pin, stored_pin_hash):
         return {"valid": True}
     else:
         return {"valid": False, "message": "PIN incorrect"}
@@ -145,8 +147,8 @@ async def verify_child_pin(device_name: str, child_id: str, child_pin: str, requ
     child = await db.children.find_one({"_id": obj_id, "parent_email": parent_email})
     if not child:
         raise HTTPException(404, "Child not found")
-    stored_pin = child.get("child_pin")
-    if stored_pin is None or stored_pin == "":
+    stored_pin_hash = child.get("child_pin")
+    if stored_pin_hash is None or stored_pin_hash == "":
         await db.devices.update_one(
             {"_id": device["_id"]},
             {"$set": {"active_child_id": child_id}}
@@ -154,7 +156,8 @@ async def verify_child_pin(device_name: str, child_id: str, child_pin: str, requ
         blocked_cats = child.get("blocked_categories", [])
         write_categories(blocked_cats)
         return {"valid": True, "child_id": child_id, "name": child["name"]}
-    if child_pin == stored_pin:
+    # Vérifier avec bcrypt
+    if verify_password(child_pin, stored_pin_hash):
         await db.devices.update_one(
             {"_id": device["_id"]},
             {"$set": {"active_child_id": child_id}}

@@ -6,6 +6,7 @@ import httpx
 from ....db.mongodb import get_db
 from ....models.child_profile import ChildProfile, ChildProfileCreate, ChildProfileUpdate
 from ....models.history import NavigationEntry, Alert
+from ....core.security import get_password_hash, verify_password
 from .auth import get_current_user
 
 router = APIRouter(prefix="/children", tags=["Children"])
@@ -40,6 +41,13 @@ async def create_child_profile(
     db = get_db()
     new_profile = profile.dict(exclude_unset=True)
     new_profile["parent_email"] = current_user["email"]
+    
+    # Hacher les PINs avant stockage
+    if new_profile.get("parent_pin"):
+        new_profile["parent_pin"] = get_password_hash(new_profile["parent_pin"])
+    if new_profile.get("child_pin"):
+        new_profile["child_pin"] = get_password_hash(new_profile["child_pin"])
+    
     result = await db.children.insert_one(new_profile)
     created = await db.children.find_one({"_id": result.inserted_id})
     # Mettre à jour la configuration IA
@@ -77,6 +85,13 @@ async def update_child_profile(
     if not existing:
         raise HTTPException(status_code=404, detail="Profile not found")
     update_dict = {k: v for k, v in update_data.dict(exclude_unset=True).items() if v is not None}
+    
+    # Hacher les PINs si modifiés
+    if "parent_pin" in update_dict and update_dict["parent_pin"]:
+        update_dict["parent_pin"] = get_password_hash(update_dict["parent_pin"])
+    if "child_pin" in update_dict and update_dict["child_pin"]:
+        update_dict["child_pin"] = get_password_hash(update_dict["child_pin"])
+    
     if update_dict:
         await db.children.update_one({"_id": ObjectId(profile_id)}, {"$set": update_dict})
         # Si la limite de temps a changé, supprimer les sessions du jour pour cet enfant

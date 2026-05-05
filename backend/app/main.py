@@ -1,16 +1,25 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .api.v1.endpoints import auth, children, pairing, session, ia_config, devices, history
+from .api.v1.endpoints import auth, children, pairing, session, ia_config, devices, history, notifications
 from .db.mongodb import connect_to_mongo, close_mongo_connection
+from .core.config import settings
 
 app = FastAPI(title="Parental Control API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost",
+        "http://localhost:*",
+        "http://127.0.0.1",
+        "http://127.0.0.1:*",
+        "http://192.168.1.*",
+        "http://192.168.220.*",
+        settings.ALLOWED_ORIGINS,
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 @app.on_event("startup")
@@ -27,7 +36,8 @@ app.include_router(pairing.router, prefix="/api/v1")
 app.include_router(session.router, prefix="/api/v1")
 app.include_router(ia_config.router, prefix="/api/v1")
 app.include_router(devices.router, prefix="/api/v1")
-app.include_router(history.router, prefix="/api/v1")   # ← ajout
+app.include_router(history.router, prefix="/api/v1")
+app.include_router(notifications.router, prefix="/api/v1")
 
 @app.get("/")
 async def root():
@@ -36,3 +46,7 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+@app.get("/api/v1/health")  # ✅ AJOUT
+async def api_health():
+    return {"status": "ok", "api_version": "v1"}

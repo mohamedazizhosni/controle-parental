@@ -1,13 +1,61 @@
 # Python
 __pycache__/
 *.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
 .env
+backend/.env
 .venv
 venv/
+env/
 *.log
+*.egg-info/
+.pytest_cache/
 
 # Docker
 *.pid
+*.log
+logs/
+
+# MongoDB data
+mongo_data/
+data/
+
+# Squid
+squid_logs/
+squid_cache/
+
+# Certificats SSL (IMPORTANT : ne pas pousser les clés privées)
+proxy/ssl/*.key
+proxy/ssl/*.pem
+*.key
+*.pem
+*.crt
+*.csr
+certbot/conf/
+certbot/www/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Scripts de test locaux (ne pas versionner)
+test_ws.py
+test_*.py
+validation*.sh
+monitor.sh
+dashboard.sh
+diagnostic.sh
+
+# Volumes Docker
+ia_config/
 
 # Flutter (Windows)
 parent_app_windows/build/
@@ -19,6 +67,8 @@ parent_app_windows/macos/
 parent_app_windows/web/
 parent_app_windows/windows/flutter/
 parent_app_windows/windows/CMakeFiles/
+parent_app_windows/pubspec.lock
+
 agent_windows/build/
 agent_windows/.dart_tool/
 agent_windows/.flutter-plugins
@@ -28,13 +78,19 @@ agent_windows/macos/
 agent_windows/web/
 agent_windows/windows/flutter/
 agent_windows/windows/CMakeFiles/
+agent_windows/pubspec.lock
 
-# MongoDB data
-mongo_data/
+# Build artifacts
+build/
+dist/
+*.exe
+*.app
+*.dmg
+*.deb
+*.rpm
 
-# Squid logs
-squid_logs/
-squid_cache/
-
-# SSL (ne pas versionner les certificats ?)
-proxy/ssl/*.key
+# Temporary
+*.tmp
+*.temp
+temp/
+tmp/
