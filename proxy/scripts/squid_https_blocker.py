@@ -3,19 +3,21 @@ import sys
 import json
 import os
 import urllib.request
-import urllib.parse
 import threading
+import re
 
 CONFIG_FILE = "/app/ia_config/blocked_categories.json"
 BACKEND_URL = "http://backend:8000"
 
-KEYWORDS = {
-    "adult":    ["porn", "sex", "xxx", "adult", "nude", "hentai", "escort", "onlyfans"],
-    "violence": ["kill", "murder", "blood", "gore", "bomb", "terror"],
-    "gambling": ["casino", "poker", "bet", "slot", "roulette", "jackpot"],
-    "social":   ["facebook", "twitter", "instagram", "tiktok", "snapchat", "youtube", "whatsapp"],
-    "games":    ["game", "minecraft", "fortnite", "roblox", "arcade"]
-}
+# Import des keywords et domaines enrichis
+sys.path.insert(0, '/usr/local/bin')
+try:
+    from keywords import KEYWORDS, BLOCKED_DOMAINS, WHITELIST_DOMAINS
+except ImportError:
+    KEYWORDS = {}
+    BLOCKED_DOMAINS = {}
+    WHITELIST_DOMAINS = []
+
 
 def load_blocked_categories():
     if os.path.exists(CONFIG_FILE):
@@ -26,21 +28,54 @@ def load_blocked_categories():
             pass
     return []
 
-def should_block(domain, blocked_cats):
-    if not blocked_cats:
-        return False
-    dl = domain.lower()
-    for cat in blocked_cats:
-        for word in KEYWORDS.get(cat, []):
-            if word in dl:
-                return True
+
+def is_whitelisted(domain: str) -> bool:
+    dl = domain.lower().strip()
+    # Enlever www.
+    if dl.startswith("www."):
+        dl = dl[4:]
+    for w in WHITELIST_DOMAINS:
+        if dl == w or dl.endswith("." + w):
+            return True
     return False
 
-def send_history(client_ip, domain, blocked):
-    """Envoi asynchrone de l'historique HTTPS au backend."""
+
+def should_block(domain: str, blocked_cats: list) -> bool:
+    if not blocked_cats:
+        return False
+
+    dl = domain.lower().strip()
+    if dl.startswith("www."):
+        dl = dl[4:]
+
+    # Whitelist prioritaire
+    if is_whitelisted(dl):
+        return False
+
+    # 1. Correspondance exacte ou sous-domaine dans BLOCKED_DOMAINS
+    for cat in blocked_cats:
+        for blocked_domain in BLOCKED_DOMAINS.get(cat, []):
+            if dl == blocked_domain or dl.endswith("." + blocked_domain):
+                return True
+
+    # 2. Mots-clés dans le domaine
+    for cat in blocked_cats:
+        for word in KEYWORDS.get(cat, []):
+            word_clean = word.lower()
+            if word_clean in dl:
+                return True
+
+    return False
+
+
+def send_history(client_ip: str, domain: str, blocked: bool):
     try:
         url = f"https://{domain}"
-        data = json.dumps({"ip": client_ip, "url": url, "blocked": blocked}).encode()
+        data = json.dumps({
+            "ip": client_ip,
+            "url": url,
+            "blocked": blocked
+        }).encode()
         req = urllib.request.Request(
             f"{BACKEND_URL}/api/v1/history/log",
             data=data,
@@ -53,9 +88,9 @@ def send_history(client_ip, domain, blocked):
     except:
         pass
 
+
 def main():
     for line in sys.stdin:
-        # Avec %DST %SRC, Squid envoie : "domain client_ip"
         parts = line.strip().split()
         if not parts:
             continue
@@ -66,16 +101,13 @@ def main():
         blocked_cats = load_blocked_categories()
         blocked = should_block(domain, blocked_cats)
 
-        # Envoyer l'historique HTTPS
         send_history(client_ip, domain, blocked)
 
-        if blocked:
-            # OK = l'ACL correspond → http_access deny s'applique → BLOQUÉ
-            sys.stdout.write("OK\n")
-        else:
-            # ERR = l'ACL ne correspond pas → autorisé
-            sys.stdout.write("ERR\n")
+        # OK = ACL correspond → http_access deny bloque
+        # ERR = ACL ne correspond pas → autorisé
+        sys.stdout.write("OK\n" if blocked else "ERR\n")
         sys.stdout.flush()
+
 
 if __name__ == "__main__":
     main()

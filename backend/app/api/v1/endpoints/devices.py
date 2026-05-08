@@ -4,46 +4,56 @@ from bson import ObjectId
 import os
 import json
 from ....db.mongodb import get_db
-from ....core.security import verify_password
 
 router = APIRouter(prefix="/devices", tags=["Devices"])
 
 CONFIG_FILE = "/app/ia_config/blocked_categories.json"
 
+
 def write_categories(categories: list):
     os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
-    with open(CONFIG_FILE, 'w') as f:
+    with open(CONFIG_FILE, "w") as f:
         json.dump({"blocked_categories": categories}, f)
 
+
+def _slot_to_minutes(t: str) -> int:
+    h, m = map(int, t.split(":"))
+    return h * 60 + m
+
+
+def _is_in_allowed_slot(slots: list) -> bool:
+    if not slots:
+        return False
+    now = datetime.utcnow()
+    current_minutes = now.hour * 60 + now.minute
+    for slot in slots:
+        start = _slot_to_minutes(slot["start"])
+        end = _slot_to_minutes(slot["end"])
+        if start <= current_minutes < end:
+            return True
+    return False
+
+
 async def auto_register_device_ip(device_name: str, request: Request):
-    """Enregistre automatiquement l'IP de l'appareil lors de chaque requête"""
     try:
         db = get_db()
-        # Récupérer l'IP réelle du client
         client_ip = request.client.host
-        
-        # Si derrière un proxy, utiliser X-Forwarded-For
         if "x-forwarded-for" in request.headers:
             client_ip = request.headers["x-forwarded-for"].split(",")[0].strip()
         elif "x-real-ip" in request.headers:
             client_ip = request.headers["x-real-ip"]
-        
-        # Enregistrer le mapping IP → appareil
         await db.ip_mapping.update_one(
             {"device_name": device_name},
             {"$set": {"ip": client_ip, "updated_at": datetime.utcnow()}},
             upsert=True
         )
     except Exception as e:
-        # Ne pas bloquer la requête si l'enregistrement échoue
         print(f"Erreur lors de l'enregistrement de l'IP: {e}")
 
 
 @router.post("/{device_name}/verify_parent_pin")
 async def verify_parent_pin(device_name: str, parent_pin: str, request: Request):
-    # Enregistrer automatiquement l'IP
     await auto_register_device_ip(device_name, request)
-    
     db = get_db()
     device = await db.devices.find_one({"device_name": device_name})
     if not device:
@@ -53,11 +63,11 @@ async def verify_parent_pin(device_name: str, parent_pin: str, request: Request)
     if not children:
         raise HTTPException(404, "No children found for parent")
     child = children[0]
-    stored_pin_hash = child.get("parent_pin")
-    if stored_pin_hash is None or stored_pin_hash == "":
+    stored_pin = child.get("parent_pin")
+    if stored_pin is None or stored_pin == "":
         return {"valid": False, "message": "No parent PIN set"}
-    # Vérifier avec bcrypt
-    if verify_password(parent_pin, stored_pin_hash):
+    # Comparaison directe en clair
+    if parent_pin == stored_pin:
         return {"valid": True}
     else:
         return {"valid": False, "message": "PIN incorrect"}
@@ -65,9 +75,7 @@ async def verify_parent_pin(device_name: str, parent_pin: str, request: Request)
 
 @router.post("/{device_name}/select_child")
 async def select_child(device_name: str, child_id: str, request: Request):
-    # Enregistrer automatiquement l'IP
     await auto_register_device_ip(device_name, request)
-    
     db = get_db()
     device = await db.devices.find_one({"device_name": device_name})
     if not device:
@@ -78,6 +86,14 @@ async def select_child(device_name: str, child_id: str, request: Request):
     child = await db.children.find_one({"_id": ObjectId(child_id), "parent_email": parent_email})
     if not child:
         raise HTTPException(403, "Child not allowed")
+    if child.get("device_mode") == "dedicated":
+        slots = child.get("allowed_time_slots", [])
+        if slots and not _is_in_allowed_slot(slots):
+            return {
+                "valid": False,
+                "reason": "outside_slot",
+                "message": "Hors de la plage horaire autorisée pour ce profil."
+            }
     await db.devices.update_one(
         {"_id": device["_id"]},
         {"$set": {"active_child_id": child_id}}
@@ -89,29 +105,41 @@ async def select_child(device_name: str, child_id: str, request: Request):
 
 @router.get("/{device_name}/children")
 async def get_children_for_device(device_name: str, request: Request):
-    # Enregistrer automatiquement l'IP
     await auto_register_device_ip(device_name, request)
-    
     db = get_db()
     device = await db.devices.find_one({"device_name": device_name})
     if not device:
         raise HTTPException(404, "Device not found")
     parent_email = device.get("parent_email")
     device_mode = device.get("device_mode", "shared")
-    children = await db.children.find({
-        "parent_email": parent_email,
-        "device_mode": device_mode
-    }).to_list(length=100)
+    shared_device_id = device.get("shared_device_id")
+
+    if device_mode == "dedicated" and shared_device_id:
+        children = await db.children.find({
+            "parent_email": parent_email,
+            "device_mode": "dedicated",
+            "shared_device_id": shared_device_id
+        }).to_list(length=100)
+    else:
+        children = await db.children.find({
+            "parent_email": parent_email,
+            "device_mode": device_mode
+        }).to_list(length=100)
+
     for c in children:
         c["_id"] = str(c["_id"])
+        if c.get("device_mode") == "dedicated":
+            slots = c.get("allowed_time_slots", [])
+            c["in_allowed_slot"] = _is_in_allowed_slot(slots)
+        else:
+            c["in_allowed_slot"] = True
+
     return children
 
 
 @router.get("/{device_name}/active_child_profile")
 async def get_active_child_profile(device_name: str, request: Request):
-    # Enregistrer automatiquement l'IP
     await auto_register_device_ip(device_name, request)
-    
     db = get_db()
     device = await db.devices.find_one({"device_name": device_name})
     if not device:
@@ -130,9 +158,7 @@ async def get_active_child_profile(device_name: str, request: Request):
 
 @router.post("/{device_name}/verify_child_pin")
 async def verify_child_pin(device_name: str, child_id: str, child_pin: str, request: Request):
-    # Enregistrer automatiquement l'IP
     await auto_register_device_ip(device_name, request)
-    
     db = get_db()
     device = await db.devices.find_one({"device_name": device_name})
     if not device:
@@ -140,15 +166,20 @@ async def verify_child_pin(device_name: str, child_id: str, child_pin: str, requ
     parent_email = device.get("parent_email")
     if not ObjectId.is_valid(child_id):
         raise HTTPException(400, "Invalid child id")
-    try:
-        obj_id = ObjectId(child_id)
-    except:
-        raise HTTPException(400, "Invalid child id format")
-    child = await db.children.find_one({"_id": obj_id, "parent_email": parent_email})
+    child = await db.children.find_one({"_id": ObjectId(child_id), "parent_email": parent_email})
     if not child:
         raise HTTPException(404, "Child not found")
-    stored_pin_hash = child.get("child_pin")
-    if stored_pin_hash is None or stored_pin_hash == "":
+    if child.get("device_mode") == "dedicated":
+        slots = child.get("allowed_time_slots", [])
+        if slots and not _is_in_allowed_slot(slots):
+            return {
+                "valid": False,
+                "reason": "outside_slot",
+                "message": "Hors de la plage horaire autorisée pour ce profil."
+            }
+    stored_pin = child.get("child_pin")
+    if stored_pin is None or stored_pin == "":
+        # Pas de PIN enfant défini — sélection directe
         await db.devices.update_one(
             {"_id": device["_id"]},
             {"$set": {"active_child_id": child_id}}
@@ -156,8 +187,8 @@ async def verify_child_pin(device_name: str, child_id: str, child_pin: str, requ
         blocked_cats = child.get("blocked_categories", [])
         write_categories(blocked_cats)
         return {"valid": True, "child_id": child_id, "name": child["name"]}
-    # Vérifier avec bcrypt
-    if verify_password(child_pin, stored_pin_hash):
+    # Comparaison directe en clair
+    if child_pin == stored_pin:
         await db.devices.update_one(
             {"_id": device["_id"]},
             {"$set": {"active_child_id": child_id}}

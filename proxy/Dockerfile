@@ -1,16 +1,35 @@
 FROM ubuntu:22.04
 
-RUN apt-get update && apt-get install -y squid python3 && rm -rf /var/lib/apt/lists/*
+ENV DEBIAN_FRONTEND=noninteractive
 
-RUN mkdir -p /var/log/squid /run/squid
+RUN apt-get update && apt-get install -y \
+    squid-openssl \
+    python3 \
+    openssl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p \
+    /var/log/squid \
+    /run/squid \
+    /var/spool/squid/ssl_db \
+    /etc/squid/ssl
 
 COPY squid.conf /etc/squid/squid.conf
 COPY scripts/squid_redirector.py /usr/local/bin/squid_redirector.py
 COPY scripts/squid_https_blocker.py /usr/local/bin/squid_https_blocker.py
-RUN chmod +x /usr/local/bin/squid_redirector.py /usr/local/bin/squid_https_blocker.py
+COPY scripts/keywords.py /usr/local/bin/keywords.py
+COPY entrypoint.sh /entrypoint.sh
 
-RUN chown -R proxy:proxy /var/log/squid /run/squid
+RUN chmod +x \
+    /usr/local/bin/squid_redirector.py \
+    /usr/local/bin/squid_https_blocker.py \
+    /entrypoint.sh
 
-EXPOSE 3128
+RUN chown -R proxy:proxy \
+    /var/log/squid \
+    /run/squid \
+    /var/spool/squid
 
-CMD ["squid", "-NYCd", "1"]
+EXPOSE 3128 3129
+
+CMD ["/entrypoint.sh"]
