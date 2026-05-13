@@ -9,7 +9,6 @@ import re
 CONFIG_FILE = "/app/ia_config/blocked_categories.json"
 BACKEND_URL = "http://backend:8000"
 
-# Import des keywords et domaines enrichis
 sys.path.insert(0, '/usr/local/bin')
 try:
     from keywords import KEYWORDS, BLOCKED_DOMAINS, WHITELIST_DOMAINS
@@ -31,7 +30,6 @@ def load_blocked_categories():
 
 def is_whitelisted(domain: str) -> bool:
     dl = domain.lower().strip()
-    # Enlever www.
     if dl.startswith("www."):
         dl = dl[4:]
     for w in WHITELIST_DOMAINS:
@@ -48,27 +46,24 @@ def should_block(domain: str, blocked_cats: list) -> bool:
     if dl.startswith("www."):
         dl = dl[4:]
 
-    # Whitelist prioritaire
     if is_whitelisted(dl):
         return False
 
-    # 1. Correspondance exacte ou sous-domaine dans BLOCKED_DOMAINS
     for cat in blocked_cats:
         for blocked_domain in BLOCKED_DOMAINS.get(cat, []):
             if dl == blocked_domain or dl.endswith("." + blocked_domain):
                 return True
 
-    # 2. Mots-clés dans le domaine
     for cat in blocked_cats:
         for word in KEYWORDS.get(cat, []):
-            word_clean = word.lower()
-            if word_clean in dl:
+            if word.lower() in dl:
                 return True
 
     return False
 
 
 def send_history(client_ip: str, domain: str, blocked: bool):
+    """Envoie l'URL complète (https://domain) pour que le backend détecte la catégorie."""
     try:
         url = f"https://{domain}"
         data = json.dumps({
@@ -103,8 +98,6 @@ def main():
 
         send_history(client_ip, domain, blocked)
 
-        # OK = ACL correspond → http_access deny bloque
-        # ERR = ACL ne correspond pas → autorisé
         sys.stdout.write("OK\n" if blocked else "ERR\n")
         sys.stdout.flush()
 

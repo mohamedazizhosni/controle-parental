@@ -20,10 +20,7 @@ async def log_history(log: HistoryLog, request: Request):
     """Appelé par le proxy Squid pour enregistrer une navigation (HTTP et HTTPS)."""
     db = get_db()
 
-    # Récupérer l'IP source depuis la requête
     source_ip = log.ip
-    
-    # Si l'IP est vide ou localhost, essayer d'autres sources
     if not source_ip or source_ip in ["0.0.0.0", "127.0.0.1"]:
         source_ip = request.client.host
         if "x-forwarded-for" in request.headers:
@@ -33,35 +30,26 @@ async def log_history(log: HistoryLog, request: Request):
 
     device = None
     child_id = None
-    
-    # Méthode 1 : Trouver l'appareil via mapping IP (le plus fiable)
+
     mapping = await db.ip_mapping.find_one({"ip": source_ip})
-    
     if mapping:
         device_name = mapping["device_name"]
         device = await db.devices.find_one({"device_name": device_name})
-    
-    # Méthode 2 : Si pas de mapping, chercher un appareil actif récemment
+
     if not device:
-        # Chercher tous les appareils avec un enfant actif
         recent_devices = await db.devices.find(
             {"active_child_id": {"$exists": True, "$ne": None}}
         ).to_list(length=10)
-        
-        # Prendre le premier appareil actif (ou améliorer la logique selon vos besoins)
         if recent_devices:
             device = recent_devices[0]
             device_name = device.get("device_name", "unknown")
-            
-            # Enregistrer automatiquement ce mapping IP pour les prochaines fois
             await db.ip_mapping.update_one(
                 {"device_name": device_name},
                 {"$set": {"ip": source_ip, "updated_at": datetime.utcnow()}},
                 upsert=True
             )
-    
+
     if not device:
-        # Aucun appareil trouvé - enregistrer quand même avec info de debug
         entry = {
             "child_id": None,
             "url": log.url,
@@ -79,7 +67,6 @@ async def log_history(log: HistoryLog, request: Request):
 
     child_id = device.get("active_child_id")
     if not child_id:
-        # Pas d'enfant actif - possiblement mode parent
         entry = {
             "child_id": None,
             "url": log.url,
@@ -95,7 +82,6 @@ async def log_history(log: HistoryLog, request: Request):
         await db.history.insert_one(entry)
         return {"message": "no active child", "device": device.get("device_name")}
 
-    # Déterminer la catégorie depuis l'URL
     category = "unknown"
     url_lower = log.url.lower()
     keywords_map = {
@@ -110,9 +96,9 @@ async def log_history(log: HistoryLog, request: Request):
             category = cat
             break
 
-    # Protocole HTTP ou HTTPS
     protocol = "HTTPS" if log.url.startswith("https://") else "HTTP"
 
+    now = datetime.utcnow()
     entry = {
         "child_id": child_id,
         "url": log.url,
@@ -120,11 +106,46 @@ async def log_history(log: HistoryLog, request: Request):
         "title": "",
         "category": category,
         "blocked": log.blocked,
-        "timestamp": datetime.utcnow(),
+        "timestamp": now,
         "source_ip": source_ip,
         "device_name": device.get("device_name")
     }
     await db.history.insert_one(entry)
+
+    if log.blocked:
+        child_doc = None
+        if ObjectId.is_valid(child_id):
+            child_doc = await db.children.find_one({"_id": ObjectId(child_id)})
+        child_name = child_doc.get("name", "Enfant") if child_doc else "Enfant"
+
+        alert = {
+            "child_id": child_id,
+            "child_name": child_name,
+            "message": f"Site bloqué ({category}) : {log.url}",
+            "url": log.url,
+            "category": category,
+            "alert_type": "blocked_site",
+            "device_name": device.get("device_name"),
+            "read": False,
+            "timestamp": now,
+        }
+        await db.alerts.insert_one(alert)
+
+        parent_email = device.get("parent_email")
+        if parent_email:
+            try:
+                from .notifications import manager
+                await manager.send_personal_message({
+                    "type": "blocked_site",
+                    "child_name": child_name,
+                    "url": log.url,
+                    "category": category,
+                    "device_name": device.get("device_name"),
+                    "timestamp": now.isoformat(),
+                }, parent_email)
+            except Exception:
+                pass
+
     return {"message": "ok", "child_id": child_id, "device_name": device.get("device_name")}
 
 
@@ -133,46 +154,39 @@ async def get_all_children_history(
     current_user = Depends(get_current_user),
     limit: int = 50
 ):
-    """
-    Récupère automatiquement l'historique de tous les enfants du parent connecté.
-    Retourne un dictionnaire avec child_id comme clé et liste d'entrées comme valeur.
-    """
+    """Récupère l'historique de tous les enfants du parent connecté."""
     db = get_db()
-    
-    # Récupérer tous les enfants du parent
+
     children = await db.children.find(
         {"parent_email": current_user["email"]}
     ).to_list(length=None)
-    
+
     if not children:
         return {}
-    
-    # Récupérer l'historique pour tous les enfants
+
     result = {}
     for child in children:
         child_id = str(child["_id"])
         child_name = child.get("name", "Enfant")
-        
-        # Récupérer l'historique de cet enfant
+
         entries = await db.history.find(
             {"child_id": child_id}
         ).sort("timestamp", -1).limit(limit).to_list(length=limit)
-        
-        # Formater les entrées
+
         formatted_entries = []
         for e in entries:
             e["_id"] = str(e["_id"])
-            if "timestamp" in e:
+            if "timestamp" in e and hasattr(e["timestamp"], "isoformat"):
                 e["timestamp"] = e["timestamp"].isoformat()
             formatted_entries.append(e)
-        
+
         result[child_id] = {
             "child_name": child_name,
             "child_id": child_id,
             "history": formatted_entries,
             "total_entries": len(formatted_entries)
         }
-    
+
     return result
 
 
@@ -183,14 +197,13 @@ async def get_history(child_id: str):
     if not ObjectId.is_valid(child_id):
         raise HTTPException(400, "Invalid child id")
 
-    # child_id est stocké comme string dans la base de données
     entries = await db.history.find(
         {"child_id": child_id}
     ).sort("timestamp", -1).limit(200).to_list(length=200)
 
     for e in entries:
         e["_id"] = str(e["_id"])
-        if "timestamp" in e:
+        if "timestamp" in e and hasattr(e["timestamp"], "isoformat"):
             e["timestamp"] = e["timestamp"].isoformat()
 
     return entries

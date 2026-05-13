@@ -66,7 +66,6 @@ async def verify_parent_pin(device_name: str, parent_pin: str, request: Request)
     stored_pin = child.get("parent_pin")
     if stored_pin is None or stored_pin == "":
         return {"valid": False, "message": "No parent PIN set"}
-    # Comparaison directe en clair
     if parent_pin == stored_pin:
         return {"valid": True}
     else:
@@ -179,7 +178,6 @@ async def verify_child_pin(device_name: str, child_id: str, child_pin: str, requ
             }
     stored_pin = child.get("child_pin")
     if stored_pin is None or stored_pin == "":
-        # Pas de PIN enfant défini — sélection directe
         await db.devices.update_one(
             {"_id": device["_id"]},
             {"$set": {"active_child_id": child_id}}
@@ -187,7 +185,6 @@ async def verify_child_pin(device_name: str, child_id: str, child_pin: str, requ
         blocked_cats = child.get("blocked_categories", [])
         write_categories(blocked_cats)
         return {"valid": True, "child_id": child_id, "name": child["name"]}
-    # Comparaison directe en clair
     if child_pin == stored_pin:
         await db.devices.update_one(
             {"_id": device["_id"]},
@@ -198,6 +195,21 @@ async def verify_child_pin(device_name: str, child_id: str, child_pin: str, requ
         return {"valid": True, "child_id": child_id, "name": child["name"]}
     else:
         return {"valid": False, "message": "PIN enfant incorrect"}
+
+
+@router.post("/{device_name}/deselect_child")
+async def deselect_child(device_name: str, request: Request):
+    """Désélectionne l'enfant actif — appelé quand on clique 'Changer de profil'."""
+    await auto_register_device_ip(device_name, request)
+    db = get_db()
+    device = await db.devices.find_one({"device_name": device_name})
+    if not device:
+        raise HTTPException(404, "Device not found")
+    await db.devices.update_one(
+        {"_id": device["_id"]},
+        {"$set": {"active_child_id": None}}
+    )
+    return {"message": "child deselected"}
 
 
 @router.post("/register_ip")

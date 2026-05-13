@@ -94,9 +94,6 @@ async def create_child_profile(
             current_user["email"]
         )
 
-    # PINs stockés en clair (code 4 chiffres, pas un mot de passe)
-    # Pas de hachage bcrypt
-
     result = await db.children.insert_one(new_profile)
     created = await db.children.find_one({"_id": result.inserted_id})
     await update_ia_config(current_user["token"])
@@ -112,68 +109,7 @@ async def list_child_profiles(current_user = Depends(get_current_user)):
     return profiles
 
 
-@router.get("/{profile_id}", response_model=ChildProfile)
-async def get_child_profile(profile_id: str, current_user = Depends(get_current_user)):
-    db = get_db()
-    if not ObjectId.is_valid(profile_id):
-        raise HTTPException(status_code=400, detail="Invalid profile id")
-    profile = await db.children.find_one({"_id": ObjectId(profile_id), "parent_email": current_user["email"]})
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
-    return ChildProfile(**profile_helper(profile))
-
-
-@router.put("/{profile_id}", response_model=ChildProfile)
-async def update_child_profile(
-    profile_id: str,
-    update_data: ChildProfileUpdate,
-    current_user = Depends(get_current_user)
-):
-    db = get_db()
-    if not ObjectId.is_valid(profile_id):
-        raise HTTPException(status_code=400, detail="Invalid profile id")
-    existing = await db.children.find_one({"_id": ObjectId(profile_id), "parent_email": current_user["email"]})
-    if not existing:
-        raise HTTPException(status_code=404, detail="Profile not found")
-
-    update_dict = {k: v for k, v in update_data.dict(exclude_unset=True).items() if v is not None}
-
-    effective_mode = update_dict.get("device_mode", existing.get("device_mode", "shared"))
-
-    if effective_mode == "shared":
-        update_dict["allowed_time_slots"] = []
-        update_dict.pop("shared_device_id", None)
-    elif effective_mode == "dedicated":
-        update_dict["daily_time_limit_minutes"] = None
-        new_slots = update_dict.get("allowed_time_slots", existing.get("allowed_time_slots", []))
-        shared_id = update_dict.get("shared_device_id", existing.get("shared_device_id"))
-        await _check_slot_conflicts(db, shared_id, profile_id, new_slots, current_user["email"])
-
-    # PINs stockés en clair — pas de hachage
-
-    if update_dict:
-        await db.children.update_one({"_id": ObjectId(profile_id)}, {"$set": update_dict})
-        if "daily_time_limit_minutes" in update_dict:
-            today = get_today_midnight()
-            await db.sessions.delete_many({"child_id": profile_id, "date": today})
-
-    updated = await db.children.find_one({"_id": ObjectId(profile_id)})
-    await update_ia_config(current_user["token"])
-    return ChildProfile(**profile_helper(updated))
-
-
-@router.delete("/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_child_profile(profile_id: str, current_user = Depends(get_current_user)):
-    db = get_db()
-    if not ObjectId.is_valid(profile_id):
-        raise HTTPException(status_code=400, detail="Invalid profile id")
-    result = await db.children.delete_one({"_id": ObjectId(profile_id), "parent_email": current_user["email"]})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Profile not found")
-    await update_ia_config(current_user["token"])
-
-
-# ---------- Groupes d'appareils dédiés ----------
+# ---------- Routes fixes — AVANT les routes paramétrées /{id} ----------
 
 @router.get("/shared_groups")
 async def list_shared_groups(current_user = Depends(get_current_user)):
@@ -222,6 +158,8 @@ async def get_history(child_id: str, current_user = Depends(get_current_user), l
     entries = await cursor.to_list(length=limit)
     for e in entries:
         e["_id"] = str(e["_id"])
+        if "timestamp" in e and hasattr(e["timestamp"], "isoformat"):
+            e["timestamp"] = e["timestamp"].isoformat()
     return entries
 
 
@@ -239,13 +177,19 @@ async def get_alerts(current_user = Depends(get_current_user), unread_only: bool
     db = get_db()
     children = await db.children.find({"parent_email": current_user["email"]}).to_list(None)
     child_ids = [str(c["_id"]) for c in children]
+    child_name_map = {str(c["_id"]): c.get("name", "Enfant") for c in children}
+
     query = {"child_id": {"$in": child_ids}}
     if unread_only:
         query["read"] = False
     cursor = db.alerts.find(query).sort("timestamp", -1)
-    alerts = await cursor.to_list(length=100)
+    alerts = await cursor.to_list(length=200)
     for a in alerts:
         a["_id"] = str(a["_id"])
+        if "timestamp" in a and hasattr(a["timestamp"], "isoformat"):
+            a["timestamp"] = a["timestamp"].isoformat()
+        if not a.get("child_name") and a.get("child_id"):
+            a["child_name"] = child_name_map.get(a["child_id"], "Enfant")
     return alerts
 
 
@@ -258,3 +202,64 @@ async def mark_alert_read(alert_id: str, current_user = Depends(get_current_user
     if result.modified_count == 0:
         raise HTTPException(404, "Alert not found")
     return {"message": "marked read"}
+
+
+# ---------- Routes paramétrées /{profile_id} — TOUJOURS EN DERNIER ----------
+
+@router.get("/{profile_id}", response_model=ChildProfile)
+async def get_child_profile(profile_id: str, current_user = Depends(get_current_user)):
+    db = get_db()
+    if not ObjectId.is_valid(profile_id):
+        raise HTTPException(status_code=400, detail="Invalid profile id")
+    profile = await db.children.find_one({"_id": ObjectId(profile_id), "parent_email": current_user["email"]})
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return ChildProfile(**profile_helper(profile))
+
+
+@router.put("/{profile_id}", response_model=ChildProfile)
+async def update_child_profile(
+    profile_id: str,
+    update_data: ChildProfileUpdate,
+    current_user = Depends(get_current_user)
+):
+    db = get_db()
+    if not ObjectId.is_valid(profile_id):
+        raise HTTPException(status_code=400, detail="Invalid profile id")
+    existing = await db.children.find_one({"_id": ObjectId(profile_id), "parent_email": current_user["email"]})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    update_dict = {k: v for k, v in update_data.dict(exclude_unset=True).items() if v is not None}
+
+    effective_mode = update_dict.get("device_mode", existing.get("device_mode", "shared"))
+
+    if effective_mode == "shared":
+        update_dict["allowed_time_slots"] = []
+        update_dict.pop("shared_device_id", None)
+    elif effective_mode == "dedicated":
+        update_dict["daily_time_limit_minutes"] = None
+        new_slots = update_dict.get("allowed_time_slots", existing.get("allowed_time_slots", []))
+        shared_id = update_dict.get("shared_device_id", existing.get("shared_device_id"))
+        await _check_slot_conflicts(db, shared_id, profile_id, new_slots, current_user["email"])
+
+    if update_dict:
+        await db.children.update_one({"_id": ObjectId(profile_id)}, {"$set": update_dict})
+        if "daily_time_limit_minutes" in update_dict:
+            today = get_today_midnight()
+            await db.sessions.delete_many({"child_id": profile_id, "date": today})
+
+    updated = await db.children.find_one({"_id": ObjectId(profile_id)})
+    await update_ia_config(current_user["token"])
+    return ChildProfile(**profile_helper(updated))
+
+
+@router.delete("/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_child_profile(profile_id: str, current_user = Depends(get_current_user)):
+    db = get_db()
+    if not ObjectId.is_valid(profile_id):
+        raise HTTPException(status_code=400, detail="Invalid profile id")
+    result = await db.children.delete_one({"_id": ObjectId(profile_id), "parent_email": current_user["email"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    await update_ia_config(current_user["token"])
