@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .api.v1.endpoints import auth, children, pairing, session, ia_config, devices, history, notifications
+from .api.v1.endpoints import auth, children, pairing, session, ia_config, devices, history, notifications, stats
 from .db.mongodb import connect_to_mongo, close_mongo_connection
 from .core.config import settings
 
@@ -38,6 +38,7 @@ app.include_router(ia_config.router, prefix="/api/v1")
 app.include_router(devices.router, prefix="/api/v1")
 app.include_router(history.router, prefix="/api/v1")
 app.include_router(notifications.router, prefix="/api/v1")
+app.include_router(stats.router, prefix="/api/v1")
 
 @app.get("/")
 async def root():
@@ -47,6 +48,6 @@ async def root():
 async def health():
     return {"status": "ok"}
 
-@app.get("/api/v1/health")  # ✅ AJOUT
+@app.get("/api/v1/health")
 async def api_health():
     return {"status": "ok", "api_version": "v1"}

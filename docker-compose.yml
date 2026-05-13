@@ -30,7 +30,6 @@ services:
     volumes:
       - ./backend:/app
       - ia_config:/app/ia_config
-      # Le certificat CA est accessible par le backend pour le téléchargement
       - squid_ssl:/etc/squid/ssl
     networks:
       - parental_net
@@ -49,7 +48,6 @@ services:
       - squid_logs:/var/log/squid
       - squid_cache:/var/spool/squid
       - squid_ssl_db:/var/spool/squid/ssl_db
-      # Volume partagé pour le certificat CA
       - squid_ssl:/etc/squid/ssl
       - ia_config:/app/ia_config
     networks:
@@ -59,8 +57,8 @@ services:
     build: ./ia
     container_name: parental_ia
     restart: unless-stopped
-    expose:
-      - "8001"
+    ports:
+      - "8001:8001"
     volumes:
       - ia_config:/app/ia_config
     networks:

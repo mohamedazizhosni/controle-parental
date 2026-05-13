@@ -11,18 +11,22 @@ from .auth import get_current_user
 
 router = APIRouter(prefix="/pairing", tags=["Pairing"])
 
+
 def generate_code() -> str:
     return ''.join(random.choices(string.digits, k=6))
+
 
 @router.post("/generate/{profile_id}")
 async def generate_pairing_code(
     profile_id: str,
-    current_user = Depends(get_current_user)
+    current_user=Depends(get_current_user)
 ):
     db = get_db()
     if not ObjectId.is_valid(profile_id):
         raise HTTPException(400, "Invalid profile id")
-    profile = await db.children.find_one({"_id": ObjectId(profile_id), "parent_email": current_user["email"]})
+    profile = await db.children.find_one(
+        {"_id": ObjectId(profile_id), "parent_email": current_user["email"]}
+    )
     if not profile:
         raise HTTPException(404, "Profile not found")
     for _ in range(5):
@@ -37,10 +41,11 @@ async def generate_pairing_code(
         "profile_id": profile_id,
         "parent_email": current_user["email"],
         "expires_at": datetime.utcnow() + timedelta(minutes=10),
-        "used": False
+        "used": False,
     }
     await db.pairing_codes.insert_one(pairing)
     return {"code": code, "expires_in_minutes": 10}
+
 
 @router.post("/verify")
 async def verify_pairing_code(code: str, device_name: str):
@@ -52,23 +57,21 @@ async def verify_pairing_code(code: str, device_name: str):
         raise HTTPException(400, "Code expired")
     await db.pairing_codes.update_one(
         {"_id": pairing["_id"]},
-        {"$set": {"used": True, "device_name": device_name}}
+        {"$set": {"used": True, "device_name": device_name}},
     )
     profile = await db.children.find_one({"_id": ObjectId(pairing["profile_id"])})
     if not profile:
         raise HTTPException(404, "Associated profile not found")
-    # Récupérer le mode de l'enfant
     device_mode = profile.get("device_mode", "shared")
-    # Mettre à jour l'appareil : on écrase son mode avec celui de l'enfant
     await db.devices.update_one(
         {"device_name": device_name},
         {"$set": {
             "parent_email": pairing["parent_email"],
             "child_id": str(profile["_id"]),
             "enabled": True,
-            "device_mode": device_mode
+            "device_mode": device_mode,
         }},
-        upsert=True
+        upsert=True,
     )
     await db.sessions.delete_many({"device_name": device_name})
     return {
@@ -79,15 +82,14 @@ async def verify_pairing_code(code: str, device_name: str):
             "blocked_categories": profile.get("blocked_categories", []),
             "daily_time_limit_minutes": profile.get("daily_time_limit_minutes"),
             "allowed_time_slots": profile.get("allowed_time_slots", []),
-            "device_mode": device_mode
+            "device_mode": device_mode,
         },
-        "proxy": {
-            "host": "192.168.220.131",   # ← à adapter
-            "port": 3128
-        },
+        "proxy": {"host": "192.168.220.131", "port": 3128},
         "parent_pin": profile.get("parent_pin", "0000"),
-        "message": "Pairing successful. Please install the CA certificate from /ca-certificate endpoint."
+        "message": "Pairing successful.",
     }
+
+
 @router.get("/ca-certificate")
 async def get_ca_certificate():
     cert_path = "/app/proxy/ssl/ca.crt"
@@ -96,17 +98,39 @@ async def get_ca_certificate():
     return FileResponse(
         cert_path,
         media_type="application/x-x509-ca-cert",
-        filename="parental-control-ca.crt"
+        filename="parental-control-ca.crt",
     )
 
+
 @router.post("/disable/{device_name}")
-async def disable_device(device_name: str, current_user = Depends(get_current_user)):
+async def disable_device(device_name: str, current_user=Depends(get_current_user)):
+    """Bloque un appareil à distance (internet coupé sur l'agent)."""
     db = get_db()
-    device = await db.devices.find_one({"device_name": device_name, "parent_email": current_user["email"]})
+    device = await db.devices.find_one(
+        {"device_name": device_name, "parent_email": current_user["email"]}
+    )
     if not device:
         raise HTTPException(404, "Device not found")
-    await db.devices.update_one({"_id": device["_id"]}, {"$set": {"enabled": False}})
+    await db.devices.update_one(
+        {"_id": device["_id"]}, {"$set": {"enabled": False}}
+    )
     return {"message": f"Device {device_name} disabled"}
+
+
+@router.post("/enable/{device_name}")
+async def enable_device(device_name: str, current_user=Depends(get_current_user)):
+    """Débloque un appareil à distance (réactive le mode enfant sur l'agent)."""
+    db = get_db()
+    device = await db.devices.find_one(
+        {"device_name": device_name, "parent_email": current_user["email"]}
+    )
+    if not device:
+        raise HTTPException(404, "Device not found")
+    await db.devices.update_one(
+        {"_id": device["_id"]}, {"$set": {"enabled": True}}
+    )
+    return {"message": f"Device {device_name} enabled"}
+
 
 @router.get("/status")
 async def device_status(device_name: str):

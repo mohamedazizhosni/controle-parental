@@ -1,9 +1,10 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Depends
 from datetime import datetime
 from bson import ObjectId
 import os
 import json
 from ....db.mongodb import get_db
+from .auth import get_current_user
 
 router = APIRouter(prefix="/devices", tags=["Devices"])
 
@@ -51,6 +52,48 @@ async def auto_register_device_ip(device_name: str, request: Request):
         print(f"Erreur lors de l'enregistrement de l'IP: {e}")
 
 
+# ─── Nouvel endpoint : liste tous les appareils + enfant actif ─────────────
+@router.get("/all_status")
+async def get_all_devices_status(current_user=Depends(get_current_user)):
+    """Retourne tous les appareils appairés avec l'enfant actif et le statut."""
+    db = get_db()
+    devices = await db.devices.find(
+        {"parent_email": current_user["email"]}
+    ).to_list(length=100)
+
+    result = []
+    for device in devices:
+        device_name = device.get("device_name", "")
+        enabled = device.get("enabled", True)
+        active_child_id = device.get("active_child_id")
+        active_child = None
+
+        if active_child_id and ObjectId.is_valid(active_child_id):
+            child = await db.children.find_one({"_id": ObjectId(active_child_id)})
+            if child:
+                active_child = {
+                    "id": str(child["_id"]),
+                    "name": child["name"],
+                    "age": child["age"],
+                    "blocked_categories": child.get("blocked_categories", []),
+                }
+
+        # Récupérer la dernière IP connue
+        ip_mapping = await db.ip_mapping.find_one({"device_name": device_name})
+        last_ip = ip_mapping.get("ip") if ip_mapping else None
+        last_seen = ip_mapping.get("updated_at") if ip_mapping else None
+
+        result.append({
+            "device_name": device_name,
+            "enabled": enabled,
+            "active_child": active_child,
+            "last_ip": last_ip,
+            "last_seen": last_seen.isoformat() if last_seen else None,
+        })
+
+    return result
+
+
 @router.post("/{device_name}/verify_parent_pin")
 async def verify_parent_pin(device_name: str, parent_pin: str, request: Request):
     await auto_register_device_ip(device_name, request)
@@ -95,7 +138,7 @@ async def select_child(device_name: str, child_id: str, request: Request):
             }
     await db.devices.update_one(
         {"_id": device["_id"]},
-        {"$set": {"active_child_id": child_id}}
+        {"$set": {"active_child_id": child_id, "enabled": True}}
     )
     blocked_cats = child.get("blocked_categories", [])
     write_categories(blocked_cats)
@@ -199,7 +242,6 @@ async def verify_child_pin(device_name: str, child_id: str, child_pin: str, requ
 
 @router.post("/{device_name}/deselect_child")
 async def deselect_child(device_name: str, request: Request):
-    """Désélectionne l'enfant actif — appelé quand on clique 'Changer de profil'."""
     await auto_register_device_ip(device_name, request)
     db = get_db()
     device = await db.devices.find_one({"device_name": device_name})
