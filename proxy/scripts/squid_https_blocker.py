@@ -3,20 +3,22 @@ import sys
 import json
 import os
 import urllib.request
-import threading
-import re
 
-CONFIG_FILE = "/app/ia_config/blocked_categories.json"
-BACKEND_URL = "http://backend:8000"
-IA_URL      = "http://ia:8001/predict"
+CONFIG_FILE  = "/app/ia_config/blocked_categories.json"
+BACKEND_URL  = "http://backend:8000"
+IA_URL       = "http://ia:8001"
 
 sys.path.insert(0, '/usr/local/bin')
 try:
     from keywords import KEYWORDS, BLOCKED_DOMAINS, WHITELIST_DOMAINS
 except ImportError:
-    KEYWORDS = {}
-    BLOCKED_DOMAINS = {}
+    KEYWORDS          = {}
+    BLOCKED_DOMAINS   = {}
     WHITELIST_DOMAINS = []
+
+
+def log(msg: str):
+    print(f"[helper] {msg}", file=sys.stderr, flush=True)
 
 
 def load_blocked_categories():
@@ -24,8 +26,8 @@ def load_blocked_categories():
         try:
             with open(CONFIG_FILE, 'r') as f:
                 return json.load(f).get("blocked_categories", [])
-        except:
-            pass
+        except Exception as e:
+            log(f"load_blocked_categories error: {e}")
     return []
 
 
@@ -39,100 +41,103 @@ def is_whitelisted(domain: str) -> bool:
     return False
 
 
-def keyword_check(domain: str, blocked_cats: list) -> bool:
-    """Étape 1 : vérification rapide par mots-clés (instantané)."""
+def should_block_instant(domain: str, blocked_cats: list):
     if not blocked_cats:
-        return False
+        return False, "safe"
 
     dl = domain.lower().strip()
     if dl.startswith("www."):
         dl = dl[4:]
 
     if is_whitelisted(dl):
-        return False
+        return False, "safe"
 
-    # Correspondance domaine exact
     for cat in blocked_cats:
-        for blocked_domain in BLOCKED_DOMAINS.get(cat, []):
-            if dl == blocked_domain or dl.endswith("." + blocked_domain):
-                return True
+        for bd in BLOCKED_DOMAINS.get(cat, []):
+            if dl == bd or dl.endswith("." + bd):
+                log(f"BLOCK instant domain={domain} cat={cat} matched={bd}")
+                return True, cat
 
-    # Mots-clés dans le domaine
     for cat in blocked_cats:
         for word in KEYWORDS.get(cat, []):
             if word.lower() in dl:
-                return True
+                log(f"BLOCK instant domain={domain} cat={cat} keyword={word}")
+                return True, cat
 
-    return False
+    return False, "safe"
 
 
-def ia_check(domain: str) -> bool:
-    """
-    Étape 2 : appel à l'IA (TF-IDF + NB) avec l'URL HTTPS complète.
-    L'IA va fetch le contenu de la page et classifier.
-    """
+def ask_ia(domain: str):
     try:
-        url = f"https://{domain}"
-        data = json.dumps({
-            "url": url,
-            "fetch_content": True   # ← L'IA fetch le contenu HTTPS
-        }).encode()
-        req = urllib.request.Request(
-            IA_URL,
-            data=data,
-            headers={'Content-Type': 'application/json'}
+        url     = f"https://{domain}"
+        payload = json.dumps({"url": url, "fetch_content": True}).encode()
+        req     = urllib.request.Request(
+            f"{IA_URL}/predict",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
         )
-        with urllib.request.urlopen(req, timeout=4) as resp:
-            result = json.loads(resp.read().decode())
-            return result.get("blocked", False)
-    except Exception:
-        return False
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            data    = json.loads(resp.read())
+            blocked = data.get("blocked", False)
+            cat     = data.get("category", "safe")
+            conf    = data.get("confidence", 0)
+            log(f"IA domain={domain} blocked={blocked} cat={cat} conf={conf}")
+            return blocked, cat
+    except Exception as e:
+        log(f"ask_ia error domain={domain}: {e}")
+        return False, "safe"
 
 
 def send_history(client_ip: str, domain: str, blocked: bool):
     try:
-        url = f"https://{domain}"
         data = json.dumps({
             "ip": client_ip,
-            "url": url,
-            "blocked": blocked
+            "url": f"https://{domain}",
+            "blocked": blocked,
         }).encode()
         req = urllib.request.Request(
             f"{BACKEND_URL}/api/v1/history/log",
             data=data,
-            headers={'Content-Type': 'application/json'}
+            headers={"Content-Type": "application/json"},
         )
-        threading.Thread(
-            target=lambda: urllib.request.urlopen(req, timeout=2),
-            daemon=True
-        ).start()
-    except:
+        urllib.request.urlopen(req, timeout=2)
+    except Exception:
         pass
 
 
 def main():
+    log("squid_https_blocker started")
     for line in sys.stdin:
-        parts = line.strip().split()
-        if not parts:
+        line = line.strip()
+        if not line:
+            sys.stdout.write("ERR\n")
+            sys.stdout.flush()
             continue
 
+        parts     = line.split()
         domain    = parts[0]
         client_ip = parts[1] if len(parts) > 1 else "0.0.0.0"
 
-        blocked_cats = load_blocked_categories()
+        try:
+            blocked_cats = load_blocked_categories()
 
-        # ── Étape 1 : mots-clés (instantané) ─────────────────────────────────
-        blocked = keyword_check(domain, blocked_cats)
+            blocked, category = should_block_instant(domain, blocked_cats)
 
-        # ── Étape 2 : IA TF-IDF + NB si pas encore bloqué ───────────────────
-        if not blocked and blocked_cats:
-            blocked = ia_check(domain)
+            if not blocked and blocked_cats:
+                blocked, category = ask_ia(domain)
 
-        # Logger en arrière-plan
-        send_history(client_ip, domain, blocked)
+            send_history(client_ip, domain, blocked)
 
-        sys.stdout.write("OK\n" if blocked else "ERR\n")
-        sys.stdout.flush()
+            answer = "OK" if blocked else "ERR"
+            log(f"domain={domain} → {answer}")
+            sys.stdout.write(f"{answer}\n")
+            sys.stdout.flush()
+
+        except Exception as e:
+            log(f"CRITICAL error domain={domain}: {e}")
+            sys.stdout.write("ERR\n")
+            sys.stdout.flush()
 
 
 if __name__ == "__main__":

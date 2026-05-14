@@ -3,8 +3,6 @@ import os
 import re
 import sys
 import requests
-import joblib
-import numpy as np
 from bs4 import BeautifulSoup
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -12,6 +10,11 @@ from typing import Optional, List
 from cachetools import TTLCache
 import hashlib
 from urllib.parse import urlparse
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.pipeline import Pipeline
+import joblib
 
 app = FastAPI(title="IA Parental Control")
 
@@ -19,22 +22,9 @@ app = FastAPI(title="IA Parental Control")
 url_cache = TTLCache(maxsize=5000, ttl=7200)
 
 CONFIG_FILE = "/app/ia_config/blocked_categories.json"
-MODEL_PATH  = "/app/model.pkl"
+MODEL_FILE = "/app/ia_config/model.pkl"
 
-# ── Chargement du modèle NLP ──────────────────────────────────────────────────
-_nlp_model = None
-
-def get_nlp_model():
-    global _nlp_model
-    if _nlp_model is None and os.path.exists(MODEL_PATH):
-        try:
-            _nlp_model = joblib.load(MODEL_PATH)
-            print("Modèle NLP chargé.")
-        except Exception as e:
-            print(f"Erreur chargement modèle: {e}")
-    return _nlp_model
-
-# ── Import des keywords ───────────────────────────────────────────────────────
+# Import des keywords enrichis
 sys.path.insert(0, '/app')
 try:
     from keywords import KEYWORDS, BLOCKED_DOMAINS, WHITELIST_DOMAINS
@@ -48,6 +38,64 @@ except ImportError:
     }
     BLOCKED_DOMAINS = {}
     WHITELIST_DOMAINS = []
+
+
+# ── TF-IDF + Naive Bayes ───────────────────────────────────────────────────────
+
+def build_training_data():
+    texts, labels = [], []
+    for cat, words in KEYWORDS.items():
+        for i in range(0, len(words), 3):
+            chunk = words[i:i+6]
+            texts.append(" ".join(chunk) + " " + " ".join(chunk))
+            labels.append(cat)
+        for dom in BLOCKED_DOMAINS.get(cat, [])[:20]:
+            texts.append(dom.replace(".", " ") + " " + " ".join(words[:5]))
+            labels.append(cat)
+    safe_words = [
+        "weather forecast news today business education science technology",
+        "cooking recipe food restaurant healthy nutrition",
+        "travel tourism hotel flight airport",
+        "sport football basketball athletics olympic",
+        "music art culture history museum",
+        "finance bank economy stock market investment",
+        "health medical doctor hospital medicine",
+        "education school university research study",
+    ]
+    for sw in safe_words:
+        texts.append(sw)
+        labels.append("safe")
+    return texts, labels
+
+
+def train_or_load_model() -> Pipeline:
+    if os.path.exists(MODEL_FILE):
+        try:
+            return joblib.load(MODEL_FILE)
+        except Exception:
+            pass
+
+    texts, labels = build_training_data()
+    pipeline = Pipeline([
+        ("tfidf", TfidfVectorizer(
+            analyzer="word",
+            ngram_range=(1, 2),
+            min_df=1,
+            sublinear_tf=True,
+        )),
+        ("clf", MultinomialNB(alpha=0.5)),
+    ])
+    pipeline.fit(texts, labels)
+    os.makedirs(os.path.dirname(MODEL_FILE), exist_ok=True)
+    try:
+        joblib.dump(pipeline, MODEL_FILE)
+    except Exception:
+        pass
+    return pipeline
+
+
+# Chargement du modèle au démarrage
+tfidf_model: Pipeline = train_or_load_model()
 
 
 def load_blocked_categories() -> List[str]:
@@ -71,26 +119,6 @@ def extract_domain(url: str) -> str:
         return url.lower()
 
 
-def extract_url_text(url: str) -> str:
-    """Extrait tous les tokens lisibles d'une URL (domaine + chemin + paramètres)."""
-    try:
-        parsed = urlparse(url)
-        parts = [
-            parsed.netloc or '',
-            parsed.path or '',
-            parsed.query or '',
-            parsed.fragment or '',
-        ]
-        combined = ' '.join(parts)
-        # Séparer les mots collés : adult-content → adult content
-        combined = re.sub(r'[-_/\.%+]', ' ', combined)
-        # Séparer camelCase : adultContent → adult Content
-        combined = re.sub(r'([a-z])([A-Z])', r'\1 \2', combined)
-        return combined.lower()
-    except:
-        return url.lower()
-
-
 def is_whitelisted(domain: str) -> bool:
     dl = domain.lower().strip()
     if dl.startswith("www."):
@@ -101,74 +129,29 @@ def is_whitelisted(domain: str) -> bool:
     return False
 
 
-def fetch_page_content(url: str, timeout: int = 4) -> str:
-    """
-    Fetch le contenu HTML d'une URL (HTTP ou HTTPS).
-    Retourne titre + meta description + début du texte visible.
-    """
+def fetch_text_from_url(url: str, timeout: int = 5) -> str:
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (compatible; ParentalControlBot/2.0)",
             "Accept-Language": "fr,en;q=0.9",
-            "Accept": "text/html,application/xhtml+xml",
         }
-        resp = requests.get(url, timeout=timeout, headers=headers,
-                            verify=False, allow_redirects=True)
+        resp = requests.get(url, timeout=timeout, headers=headers, verify=False)
         resp.raise_for_status()
-
         soup = BeautifulSoup(resp.text, "html.parser")
-
-        # Extraire titre
-        title = soup.title.string if soup.title else ""
-
-        # Extraire meta description et keywords
-        meta_desc = ""
-        meta_kw   = ""
-        for meta in soup.find_all("meta"):
-            name = (meta.get("name") or "").lower()
-            if name in ("description", "og:description"):
-                meta_desc = meta.get("content", "")
-            elif name == "keywords":
-                meta_kw = meta.get("content", "")
-
-        # Extraire texte visible (limité)
-        for tag in soup(["script", "style", "nav", "footer", "header"]):
+        for tag in soup(["script", "style", "noscript", "header", "footer", "nav"]):
             tag.decompose()
-        body_text = soup.get_text(separator=" ", strip=True)
-        body_text = re.sub(r'\s+', ' ', body_text)[:3000]
-
-        combined = f"{title} {meta_desc} {meta_kw} {body_text}"
-        return combined.lower()
+        parts = []
+        if soup.title:
+            parts.append(soup.title.get_text())
+        for meta in soup.find_all("meta", attrs={"name": ["description", "keywords"]}):
+            parts.append(meta.get("content", ""))
+        parts.append(soup.get_text(separator=" ", strip=True))
+        text = " ".join(parts)
+        text = re.sub(r'\s+', ' ', text)
+        return text.lower()[:8000]
     except Exception:
         return ""
 
-
-def nlp_classify(text: str, blocked_cats: List[str]):
-    """
-    Classifie un texte avec TF-IDF + Naive Bayes.
-    Retourne (categorie, confidence) ou (None, 0) si modèle absent.
-    """
-    model = get_nlp_model()
-    if model is None or not text.strip():
-        return None, 0.0
-
-    try:
-        proba = model.predict_proba([text])[0]
-        classes = model.classes_
-        # Filtrer uniquement les catégories bloquées
-        best_cat   = None
-        best_proba = 0.0
-        for i, cls in enumerate(classes):
-            if cls in blocked_cats and proba[i] > best_proba:
-                best_proba = proba[i]
-                best_cat   = cls
-        return best_cat, float(best_proba)
-    except Exception as e:
-        print(f"Erreur NLP: {e}")
-        return None, 0.0
-
-
-# ── Modèles Pydantic ──────────────────────────────────────────────────────────
 
 class PredictRequest(BaseModel):
     url: str
@@ -179,12 +162,9 @@ class PredictResponse(BaseModel):
     category: str
     confidence: float
     blocked: bool
-    method: str = "keywords"   # keywords | nlp_url | nlp_content
     content_analyzed: bool = False
     cached: bool = False
 
-
-# ── Endpoint principal ────────────────────────────────────────────────────────
 
 @app.post("/predict", response_model=PredictResponse)
 async def predict(req: PredictRequest):
@@ -197,99 +177,78 @@ async def predict(req: PredictRequest):
 
     blocked_cats = load_blocked_categories()
     if not blocked_cats:
-        result = {"category": "safe", "confidence": 1.0, "blocked": False,
-                  "method": "keywords", "content_analyzed": False}
+        result = {"category": "safe", "confidence": 1.0, "blocked": False, "content_analyzed": False}
         url_cache[cache_key] = result
         return PredictResponse(**result)
 
-    domain    = extract_domain(req.url)
-    url_lower = req.url.lower()
+    domain = extract_domain(req.url)
 
-    # ── Étape 0 : Whitelist prioritaire ──────────────────────────────────────
+    # Whitelist prioritaire
     if is_whitelisted(domain):
-        result = {"category": "safe", "confidence": 1.0, "blocked": False,
-                  "method": "keywords", "content_analyzed": False}
+        result = {"category": "safe", "confidence": 1.0, "blocked": False, "content_analyzed": False}
         url_cache[cache_key] = result
         return PredictResponse(**result)
 
-    # ── Étape 1a : Domaine exact dans liste noire ─────────────────────────────
+    # Analyse 1 : correspondance exacte de domaine dans BLOCKED_DOMAINS
     for cat in blocked_cats:
         for blocked_domain in BLOCKED_DOMAINS.get(cat, []):
             if domain == blocked_domain or domain.endswith("." + blocked_domain):
-                result = {"category": cat, "confidence": 1.0, "blocked": True,
-                          "method": "keywords", "content_analyzed": False}
+                result = {"category": cat, "confidence": 1.0, "blocked": True, "content_analyzed": False}
                 url_cache[cache_key] = result
                 return PredictResponse(**result)
 
-    # ── Étape 1b : Mots-clés dans domaine/URL ────────────────────────────────
+    # Analyse 2 : mots-clés dans le domaine / URL
+    url_lower = req.url.lower()
     for cat in blocked_cats:
         for word in KEYWORDS.get(cat, []):
             if word in domain or word in url_lower:
-                result = {"category": cat, "confidence": 0.95, "blocked": True,
-                          "method": "keywords", "content_analyzed": False}
+                result = {"category": cat, "confidence": 0.95, "blocked": True, "content_analyzed": False}
                 url_cache[cache_key] = result
                 return PredictResponse(**result)
 
-    # ── Étape 2 : NLP sur l'URL seule (tokens extraits) ──────────────────────
-    url_text = extract_url_text(req.url)
-    nlp_cat, nlp_conf = nlp_classify(url_text, blocked_cats)
-    if nlp_cat and nlp_conf >= 0.70:
-        result = {"category": nlp_cat, "confidence": nlp_conf, "blocked": True,
-                  "method": "nlp_url", "content_analyzed": False}
-        url_cache[cache_key] = result
-        return PredictResponse(**result)
+    # Analyse 3 : fetch contenu HTTP ET HTTPS + TF-IDF + Naive Bayes
+    text = ""
+    content_analyzed = False
+    if req.fetch_content and (req.url.startswith("http://") or req.url.startswith("https://")):
+        text = fetch_text_from_url(req.url)
+        content_analyzed = bool(text)
 
-    # ── Étape 3 : Fetch contenu + NLP (HTTP et HTTPS) ────────────────────────
-    if not req.fetch_content:
-        result = {"category": "safe", "confidence": 0.5, "blocked": False,
-                  "method": "keywords", "content_analyzed": False}
-        url_cache[cache_key] = result
-        return PredictResponse(**result)
+    if text:
+        combined = (req.url + " " + domain + " " + text).lower()
 
-    page_text = fetch_page_content(req.url)
-    if page_text:
-        # Combiner URL + contenu pour meilleure précision
-        combined_text = url_text + " " + page_text
+        # 3a — Analyse TF-IDF + Naive Bayes
+        proba = tfidf_model.predict_proba([combined])[0]
+        classes = tfidf_model.classes_
+        best_idx = int(np.argmax(proba))
+        best_cat = classes[best_idx]
+        best_conf = float(proba[best_idx])
 
-        # NLP sur contenu complet
-        nlp_cat, nlp_conf = nlp_classify(combined_text, blocked_cats)
-        if nlp_cat and nlp_conf >= 0.60:
-            result = {"category": nlp_cat, "confidence": nlp_conf, "blocked": True,
-                      "method": "nlp_content", "content_analyzed": True}
+        if best_cat in blocked_cats and best_conf >= 0.40:
+            result = {
+                "category": best_cat,
+                "confidence": round(best_conf, 3),
+                "blocked": True,
+                "content_analyzed": True,
+            }
             url_cache[cache_key] = result
             return PredictResponse(**result)
 
-        # Fallback : comptage de mots-clés dans le contenu
+        # 3b — Fallback comptage de mots-clés si TF-IDF hésitant
         for cat in blocked_cats:
-            matches = sum(1 for word in KEYWORDS.get(cat, []) if word in combined_text)
-            if matches >= 3:
-                result = {"category": cat, "confidence": 0.85, "blocked": True,
-                          "method": "keywords", "content_analyzed": True}
+            matches = sum(1 for word in KEYWORDS.get(cat, []) if word in combined)
+            if matches >= 2:
+                result = {"category": cat, "confidence": 0.75, "blocked": True, "content_analyzed": True}
                 url_cache[cache_key] = result
                 return PredictResponse(**result)
 
-    result = {"category": "safe", "confidence": 0.5, "blocked": False,
-              "method": "keywords", "content_analyzed": bool(page_text)}
+    result = {"category": "safe", "confidence": 0.5, "blocked": False, "content_analyzed": content_analyzed}
     url_cache[cache_key] = result
     return PredictResponse(**result)
 
 
-# ── Endpoints utilitaires ─────────────────────────────────────────────────────
-
-@app.on_event("startup")
-async def startup():
-    """Charger le modèle au démarrage du serveur."""
-    get_nlp_model()
-
-
 @app.get("/health")
 async def health():
-    model = get_nlp_model()
-    return {
-        "status": "ok",
-        "cache_size": len(url_cache),
-        "nlp_model_loaded": model is not None,
-    }
+    return {"status": "ok", "cache_size": len(url_cache)}
 
 
 @app.get("/cache/stats")
@@ -303,7 +262,6 @@ async def cache_stats():
 
 @app.get("/keywords/stats")
 async def keywords_stats():
-    model = get_nlp_model()
     return {
         "categories": list(KEYWORDS.keys()),
         "keywords_count": {cat: len(words) for cat, words in KEYWORDS.items()},
@@ -311,25 +269,4 @@ async def keywords_stats():
         "whitelist_count": len(WHITELIST_DOMAINS),
         "total_keywords": sum(len(w) for w in KEYWORDS.values()),
         "total_blocked_domains": sum(len(d) for d in BLOCKED_DOMAINS.values()),
-        "nlp_model_loaded": model is not None,
     }
-
-
-@app.post("/retrain")
-async def retrain():
-    """Réentraîner le modèle à la demande."""
-    global _nlp_model
-    try:
-        import subprocess
-        result = subprocess.run(
-            ["python3", "/app/train_model.py"],
-            capture_output=True, text=True, timeout=120
-        )
-        if result.returncode == 0:
-            _nlp_model = None
-            get_nlp_model()
-            return {"status": "ok", "message": "Modèle réentraîné avec succès"}
-        else:
-            return {"status": "error", "message": result.stderr}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}

@@ -5,6 +5,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     squid-openssl \
     python3 \
+    python3-pip \
+    python3-requests \
+    python3-bs4 \
     openssl \
     && rm -rf /var/lib/apt/lists/*
 
