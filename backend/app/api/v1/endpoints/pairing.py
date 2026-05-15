@@ -84,7 +84,7 @@ async def verify_pairing_code(code: str, device_name: str):
             "allowed_time_slots": profile.get("allowed_time_slots", []),
             "device_mode": device_mode,
         },
-        "proxy": {"host": "192.168.220.131", "port": 3128},
+        "proxy": {"host": "192.168.100.94", "port": 3128},
         "parent_pin": profile.get("parent_pin", "0000"),
         "message": "Pairing successful.",
     }
@@ -92,7 +92,7 @@ async def verify_pairing_code(code: str, device_name: str):
 
 @router.get("/ca-certificate")
 async def get_ca_certificate():
-    cert_path = "/app/proxy/ssl/ca.crt"
+    cert_path = "/etc/squid/ssl/ca-certificate.crt"
     if not os.path.exists(cert_path):
         raise HTTPException(status_code=404, detail="CA certificate not found")
     return FileResponse(

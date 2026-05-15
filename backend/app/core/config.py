@@ -8,6 +8,6 @@ class Settings:
     SECRET_KEY = os.getenv("SECRET_KEY", "default-secret-key-change-me")
     ALGORITHM = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES = 30
-    ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost,http://192.168.220.131")
+    ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost,http://192.168.100.94")
 
 settings = Settings()
