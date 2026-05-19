@@ -17,60 +17,88 @@ from .auth import get_current_user
 
 router = APIRouter(prefix="/blocklist", tags=["blocklist"])
 
-# ─────────────────────────────────────────────────────────────────────────────
-# MAPPING CATÉGORIE → DOMAINES (liste statique exhaustive)
-# ─────────────────────────────────────────────────────────────────────────────
 CATEGORY_DOMAINS: dict[str, list[str]] = {
 
     "jeux": [
-        # Plateformes de jeux en ligne
-        "miniclip.com", "addictinggames.com", "poki.com", "friv.com",
-        "gamesgames.com", "silvergames.com", "crazygames.com", "y8.com",
-        "kizi.com", "agame.com", "coolmathgames.com", "armor games.com",
+        # ── Plateformes jeux navigateur ──────────────────────────────────────
+        "miniclip.com", "poki.com", "friv.com", "friv2.com", "friv4school.com",
+        "crazygames.com", "y8.com", "y9.com", "kizi.com", "agame.com",
+        "silvergames.com", "gamesgames.com", "addictinggames.com",
+        "coolmathgames.com", "coolmath.com", "coolmath4kids.com",
         "armorgames.com", "kongregate.com", "newgrounds.com", "andkon.com",
         "onlinegames.io", "gamepix.com", "gamaverse.com", "itch.io",
-        "roblox.com", "minecraft.net", "mojang.com", "epicgames.com",
-        "store.epicgames.com", "fortnite.com", "origin.com", "ea.com",
-        "battlenet.com", "battle.net", "blizzard.com", "steampowered.com",
-        "store.steampowered.com", "steamcommunity.com", "steamstatic.com",
-        "gog.com", "ubisoft.com", "ubisoftconnect.com", "rockstargames.com",
-        "socialclub.rockstargames.com", "2k.com", "take2games.com",
-        "activision.com", "callofduty.com", "warzone.com", "bethesda.net",
-        "elderscrollsonline.com", "runescape.com", "jagex.com",
-        "leagueoflegends.com", "riotgames.com", "valorant.com",
-        "dota2.com", "store.dota2.com", "worldofwarcraft.com",
-        "overwatch.com", "diablo.com", "hearthstone.com",
-        "starcraft2.com", "starcraft.com", "heroes.blizzard.com",
-        "genshin.hoyoverse.com", "hoyoverse.com", "mihoyo.com",
-        "genshin-impact.fandom.com", "teyvat.mihoyo.com",
-        "pubg.com", "battlegroundsgame.com",
-        "nexon.com", "nexonamerica.com", "maplestory.com",
-        "gameloft.com", "kingdigital.com", "king.com",
-        "candy-crush.com", "supercell.com", "clashroyale.com",
-        "clashofclans.com", "brawlstars.com",
-        "pocketgems.com", "playtika.com", "zynga.com", "wixgame.com",
+        "gameflare.com", "gamesnacks.com", "gamedistribution.com",
+        "htmlgames.com", "html5games.com", "htmlgames.net",
         "funnygames.org", "girlsgogames.com", "games2jolly.com",
-        "games2win.com", "spele.nl", "spel.nl", "juegosdefriv.com",
-        "pacogames.com", "oyunlar1.com", "oyunlar.com",
-        "plonga.com", "netgames.io", "playsaurus.com",
-        "flipline.com", "papas-games.io", "idletycoon.com",
-        "nitro.com", "nitrogames.com", "nitrome.com",
-        "gameflare.com", "gamesgames.com", "gamesnacks.com",
-        "gamedistribution.com", "htmlgames.com", "html5games.com",
+        "games2win.com", "pacogames.com", "plonga.com",
+        "netgames.io", "playsaurus.com", "flipline.com",
+        "nitrome.com", "bgames.com", "gamesofgondor.com",
+        "gamesgames.com", "gamekult.com",
+        # ── Jeux .io populaires ───────────────────────────────────────────────
+        "bloxd.io", "bloxd.net",
+        "slither.io", "agar.io", "diep.io", "krunker.io",
+        "moomoo.io", "surviv.io", "zombs.io", "zombsroyale.io",
+        "paper.io", "paper-io.com", "paperio.com",
+        "skribbl.io", "garticphone.com", "gartic.io",
+        "lordz.io", "wormate.io", "deeeep.io",
+        "tanksio.com", "tanks.io", "wings.io",
+        "superhex.io", "powerline.io", "curve.io",
+        "splix.io", "narwhale.io", "hexar.io",
+        "battlelands.io", "brutes.io", "doblons.io",
+        "littlebigsnake.com", "stabfish.io",
+        "warbot.io", "evowars.io", "minigiochi.com",
+        "1001games.com", "1001games.fr", "1001jeux.fr",
+        "lagged.com", "lagged.fr",
+        "gamejolt.com", "gamejolt.net",
+        "crazy-games.io", "crazygames.io",
+        "gogy.com", "gogygames.com",
+        "mathplayground.com", "sheppardsoftware.com",
+        "twoplayergames.org", "2playergames.io",
+        "unblocked-games.com", "unblocked77.com", "unblocked76.com",
+        "mills-eagles.com", "unblockedgames.io",
+        "classroom6x.com", "classroom-6x.com",
+        "tyrone-unblocked.github.io",
+        "weebly.com",  # utilisé pour héberger jeux non bloqués
+        # ── Jeux PC / Console majeurs ─────────────────────────────────────────
+        "roblox.com", "rbxcdn.com", "rbx.com",
+        "minecraft.net", "mojang.com", "minecraftforum.net",
+        "epicgames.com", "store.epicgames.com", "fortnite.com",
+        "origin.com", "ea.com", "easports.com",
+        "battle.net", "battlenet.com", "blizzard.com",
+        "steampowered.com", "store.steampowered.com",
+        "steamcommunity.com", "steamstatic.com", "steamgames.com",
+        "gog.com", "ubisoft.com", "ubisoftconnect.com",
+        "rockstargames.com", "socialclub.rockstargames.com",
+        "2k.com", "activision.com", "callofduty.com", "warzone.com",
+        "bethesda.net", "elderscrollsonline.com",
+        "runescape.com", "jagex.com", "oldschool.runescape.com",
+        "leagueoflegends.com", "riotgames.com", "valorant.com",
+        "dota2.com", "worldofwarcraft.com", "wowhead.com",
+        "overwatch.com", "hearthstone.com",
+        "genshin.hoyoverse.com", "hoyoverse.com", "mihoyo.com",
+        "pubg.com", "battlegroundsgame.com",
+        "nexon.com", "maplestory.com",
+        "gameloft.com", "king.com",
+        "supercell.com", "clashroyale.com", "clashofclans.com",
+        "brawlstars.com", "hayday.com",
+        "zynga.com", "playtika.com",
+        # ── Jeux de hasard / Casino ───────────────────────────────────────────
+        "pokerstars.com", "888casino.com", "betway.com",
+        "casumo.com", "leovegas.com", "videoslots.com",
+        "online-casino.com", "pokerhands.com", "fulltiltpoker.com",
+        "casino.com", "casinoroom.com", "mrgreen.com",
+        "pokerstars.fr", "winamax.fr", "pokerstrategy.com",
+        # ── Streaming de jeux ─────────────────────────────────────────────────
+        "twitch.tv", "clips.twitch.tv", "m.twitch.tv",
+        "gamespot.com", "ign.com", "kotaku.com",
+        "gamesplanet.com", "g2a.com", "gamivo.com",
+        "cdkeys.com", "instant-gaming.com", "kinguin.net",
+        # ── Sites jeux France ─────────────────────────────────────────────────
         "jeux.com", "jeuxjeuxjeux.fr", "jeux-gratuits.com",
         "jeuxenligne.com", "jeu.fr", "jeuxonline.info",
-        "jeuxvideo.com", "jvc.com", "gamekult.com",
-        "gamesofgondor.com", "bgames.com",
-        # Jeux de hasard / casino
-        "pokerstars.com", "888casino.com", "betway.com", "bet365.com",
-        "casumo.com", "leovegas.com", "casinoroom.com", "videoslots.com",
-        "williamhill.com", "ladbrokes.com", "draftkings.com", "fanduel.com",
-        "online-casino.com", "pokerhands.com", "fulltiltpoker.com",
-        # Streaming de jeux
-        "twitch.tv", "clips.twitch.tv", "player.twitch.tv",
-        "gamespot.com", "ign.com", "kotaku.com",
-        "gamesplanet.com", "g2a.com", "gamivo.com", "eneba.com",
-        "cdkeys.com", "instant-gaming.com", "kinguin.net",
+        "jeuxvideo.com", "jvc.com",
+        "jeuxflash.fr", "jeux-fille.fr",
+        "jouerenligné.com", "jouer.fr",
     ],
 
     "adulte": [
@@ -78,16 +106,14 @@ CATEGORY_DOMAINS: dict[str, list[str]] = {
         "redtube.com", "youporn.com", "tube8.com", "spankbang.com",
         "porntrex.com", "motherless.com", "hclips.com", "analdin.com",
         "eporner.com", "4tube.com", "pornone.com", "drtuber.com",
-        "txxx.com", "shemale.xxx", "tranny.one",
-        "beeg.com", "alphaporno.com", "iceporn.com", "tnaflix.com",
-        "fapster.xxx", "fuq.com", "fux.com", "vidoza.net",
+        "txxx.com", "beeg.com", "alphaporno.com", "iceporn.com",
+        "tnaflix.com", "fuq.com",
         "onlyfans.com", "fansly.com", "manyvids.com", "clips4sale.com",
-        "chaturbate.com", "livejasmin.com", "bongacams.com", "streamate.com",
-        "camsoda.com", "stripchat.com", "jasmin.com", "cam4.com",
-        "myfreecams.com", "ifriends.com",
-        "brazzers.com", "bangbros.com", "reality kings.com",
-        "realitykings.com", "naughtyamerica.com", "digitalplayground.com",
-        "babes.com", "devilsfilm.com", "evilangel.com",
+        "chaturbate.com", "livejasmin.com", "bongacams.com",
+        "streamate.com", "camsoda.com", "stripchat.com",
+        "cam4.com", "myfreecams.com",
+        "brazzers.com", "bangbros.com", "realitykings.com",
+        "naughtyamerica.com", "digitalplayground.com",
         "sex.com", "rule34.xxx", "e-hentai.org", "nhentai.net",
         "hentaihaven.xxx", "hanime.tv",
     ],
@@ -95,48 +121,42 @@ CATEGORY_DOMAINS: dict[str, list[str]] = {
     "violence": [
         "bestgore.com", "goregrish.com", "theync.com",
         "ogrish.com", "rotten.com", "liveleak.com",
-        "kaotic.com", "watchpeoplediecom.com",
-        "documenting-reality.com",
+        "kaotic.com", "documenting-reality.com",
+        "crazyshit.com", "efukt.com",
     ],
 
     "réseaux sociaux": [
         "facebook.com", "m.facebook.com", "web.facebook.com",
         "instagram.com", "twitter.com", "x.com",
-        "tiktok.com", "vm.tiktok.com",
+        "tiktok.com", "vm.tiktok.com", "lite.tiktok.com",
         "snapchat.com", "linkedin.com",
         "pinterest.com", "tumblr.com", "reddit.com",
         "discord.com", "discordapp.com", "discord.gg",
         "telegram.org", "t.me", "web.telegram.org",
         "whatsapp.com", "web.whatsapp.com",
         "vk.com", "ok.ru", "odnoklassniki.ru",
-        "twitch.tv", "kick.com",
-        "bereal.com", "yubo.live", "skout.com",
-        "meetme.com", "badoo.com", "tinder.com",
-        "bumble.com", "hinge.co",
+        "kick.com", "bereal.com", "yubo.live",
+        "badoo.com", "tinder.com", "bumble.com",
     ],
 
     "streaming vidéo": [
         "youtube.com", "youtu.be", "m.youtube.com",
         "netflix.com", "hulu.com", "disneyplus.com",
         "hbomax.com", "max.com", "primevideo.com",
-        "peacocktv.com", "paramountplus.com", "appletv.apple.com",
-        "dailymotion.com", "vimeo.com", "twitch.tv",
-        "crunchyroll.com", "funimation.com", "hidive.com",
-        "bilibili.com", "nicovideo.jp", "rutube.ru",
+        "peacocktv.com", "paramountplus.com",
+        "dailymotion.com", "vimeo.com",
+        "crunchyroll.com", "funimation.com",
+        "bilibili.com", "nicovideo.jp",
         "odysee.com", "bitchute.com", "rumble.com",
-        "ok.ru", "vk.com/video",
         "tf1.fr", "france.tv", "m6.fr", "arte.tv",
-        "rmc.fr", "bfmtv.com", "cnews.fr",
-        "nrj-play.fr", "rtbf.be", "rts.ch",
-        "mytf1.fr", "6play.fr", "salto.fr",
+        "mytf1.fr", "6play.fr",
     ],
 
     "streaming musique": [
         "spotify.com", "open.spotify.com",
-        "deezer.com", "tidal.com", "apple.com/music",
+        "deezer.com", "tidal.com",
         "music.youtube.com", "soundcloud.com",
-        "pandora.com", "iheartradio.com",
-        "napster.com", "last.fm",
+        "pandora.com", "napster.com",
     ],
 
     "paris sportifs": [
@@ -149,27 +169,22 @@ CATEGORY_DOMAINS: dict[str, list[str]] = {
 
     "drogues": [
         "erowid.org", "bluelight.org", "shroomery.org",
-        "rollsafe.org", "drugsunlimited.com",
-        "seedsman.com", "herbies.com", "cannabis.com",
+        "seedsman.com", "herbies.com",
         "leafly.com", "weedmaps.com",
     ],
 
     "haine": [
-        "stormfront.org", "dailystormer.name", "vnnforum.com",
-        "dailyarchive.com", "hate.com",
+        "stormfront.org", "dailystormer.name",
+        "vnnforum.com",
     ],
 
     "piratage": [
         "thepiratebay.org", "1337x.to", "rarbg.to", "nyaa.si",
         "kickasstorrents.cr", "yts.mx", "eztv.re",
-        "torrentz2.eu", "limetorrents.info", "torrentdownloads.me",
-        "piratebay.live", "thepiratebay.rocks",
-        "zooqle.com", "torlock.com", "bittorrent.am",
-        "extratorrent.unblockit.cam",
+        "torrentz2.eu", "limetorrents.info",
+        "piratebay.live", "zooqle.com", "torlock.com",
         "fmovies.to", "123movies.so", "putlocker.vip",
         "solarmovie.one", "primewire.li",
-        "sockshare.ac", "watchfree.ac", "gostream.site",
-        "cmovies.cc", "watchseries.ac",
     ],
 
     "messageries": [
@@ -179,37 +194,25 @@ CATEGORY_DOMAINS: dict[str, list[str]] = {
         "skype.com", "web.skype.com",
         "zoom.us", "meet.google.com",
         "teams.microsoft.com", "discord.com",
-        "slack.com", "hangouts.google.com",
-        "viber.com", "line.me", "wechat.com",
-        "kik.com", "wickr.com",
+        "slack.com", "viber.com", "line.me",
+        "wechat.com", "kik.com",
     ],
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# MODÈLES
-# ─────────────────────────────────────────────────────────────────────────────
 class DynamicDomainAdd(BaseModel):
     domain: str
     category: str
-    source: str = "squid_tfidf"      # qui a soumis ce domaine
+    source: str = "squid_tfidf"
     confidence: float = 1.0
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ENDPOINTS
-# ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/domains/{child_id}/agent")
 async def get_domains_for_agent(child_id: str, current_user=Depends(get_current_user)):
     """
     Retourne la liste complète des domaines bloqués pour un enfant.
-    Combine :
-      - la liste statique CATEGORY_DOMAINS selon blocked_categories du profil
-      - les domaines dynamiques ajoutés par Squid/TF-IDF
+    Combine la liste statique CATEGORY_DOMAINS + domaines dynamiques MongoDB.
     """
     db = get_db()
-
-    # Récupérer le profil de l'enfant
     if not ObjectId.is_valid(child_id):
         raise HTTPException(400, "Invalid child_id")
     child = await db.children.find_one({"_id": ObjectId(child_id)})
@@ -218,18 +221,20 @@ async def get_domains_for_agent(child_id: str, current_user=Depends(get_current_
 
     blocked_cats: list[str] = child.get("blocked_categories", [])
 
-    # Domaines statiques selon catégories bloquées
+    # Domaines statiques
     static_domains: set[str] = set()
     for cat in blocked_cats:
-        cat_key = cat.lower()
+        cat_key = cat.lower().strip()
+        # Correspondance exacte
         if cat_key in CATEGORY_DOMAINS:
             static_domains.update(CATEGORY_DOMAINS[cat_key])
-        # Chercher correspondance partielle (ex: "Jeux" → "jeux")
-        for key in CATEGORY_DOMAINS:
-            if key in cat_key or cat_key in key:
-                static_domains.update(CATEGORY_DOMAINS[key])
+        else:
+            # Correspondance partielle (ex: "Jeux vidéo" → "jeux")
+            for key in CATEGORY_DOMAINS:
+                if key in cat_key or cat_key in key:
+                    static_domains.update(CATEGORY_DOMAINS[key])
 
-    # Domaines dynamiques depuis MongoDB (découverts par Squid)
+    # Domaines dynamiques MongoDB
     dynamic_cursor = db.dynamic_blocklist.find({
         "$or": [
             {"category": {"$in": blocked_cats}},
@@ -255,18 +260,11 @@ async def get_domains_for_agent(child_id: str, current_user=Depends(get_current_
 
 @router.post("/dynamic/add")
 async def add_dynamic_domain(payload: DynamicDomainAdd, current_user=Depends(get_current_user)):
-    """
-    Squid/TF-IDF (Windows) soumet un nouveau domaine découvert.
-    Il est ajouté à dynamic_blocklist en MongoDB.
-    Tous les agents Android le bloqueront au prochain sync.
-    """
+    """Squid/TF-IDF (Windows) soumet un nouveau domaine découvert."""
     db = get_db()
     domain = payload.domain.lower().strip().lstrip("www.")
-
-    # Éviter les doublons
     existing = await db.dynamic_blocklist.find_one({"domain": domain})
     if existing:
-        # Mettre à jour la confiance si plus haute
         if payload.confidence > existing.get("confidence", 0):
             await db.dynamic_blocklist.update_one(
                 {"domain": domain},
@@ -288,7 +286,7 @@ async def add_dynamic_domain(payload: DynamicDomainAdd, current_user=Depends(get
 
 @router.get("/dynamic")
 async def list_dynamic_domains(current_user=Depends(get_current_user)):
-    """Liste tous les domaines dynamiques (pour l'interface parent)."""
+    """Liste tous les domaines dynamiques."""
     db = get_db()
     docs = await db.dynamic_blocklist.find().sort("created_at", -1).to_list(length=5000)
     for d in docs:
@@ -311,7 +309,4 @@ async def delete_dynamic_domain(domain: str, current_user=Depends(get_current_us
 @router.get("/categories")
 async def get_available_categories():
     """Retourne les catégories disponibles et le nombre de domaines statiques."""
-    return {
-        cat: len(domains)
-        for cat, domains in CATEGORY_DOMAINS.items()
-    }
+    return {cat: len(domains) for cat, domains in CATEGORY_DOMAINS.items()}
