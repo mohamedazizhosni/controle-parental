@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api.v1.endpoints import (
     auth, children, pairing, session,
     ia_config, devices, history, notifications,
-    stats, fcm, apps, app_usage
+    stats, fcm, apps, app_usage, blocklist
 )
 from .db.mongodb import connect_to_mongo, close_mongo_connection
 from .core.config import settings
@@ -49,6 +49,9 @@ app.include_router(stats.router, prefix="/api/v1")
 app.include_router(fcm.router, prefix="/api/v1")
 app.include_router(apps.router, prefix="/api/v1")
 app.include_router(app_usage.router, prefix="/api/v1")
+
+# Blacklist partagée Windows+Android
+app.include_router(blocklist.router, prefix="/api/v1")
 
 @app.get("/")
 async def root():
