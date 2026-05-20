@@ -1,12 +1,13 @@
 """
 Blacklist partagée — catégories → domaines (statique + dynamique via Squid/TF-IDF)
 GET  /api/v1/blocklist/domains/{child_id}/agent  → liste pour l'agent Android
-POST /api/v1/blocklist/dynamic/add               → Squid/Windows ajoute un domaine découvert
+POST /api/v1/blocklist/dynamic/add               → Squid/Windows ajoute un domaine découvert (JWT)
+POST /api/v1/blocklist/dynamic/add_internal      → Squid/Windows ajoute un domaine (clé interne Docker)
 GET  /api/v1/blocklist/dynamic                   → liste les domaines dynamiques
 DELETE /api/v1/blocklist/dynamic/{domain}        → supprime un domaine dynamique
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
@@ -16,6 +17,9 @@ from ....db.mongodb import get_db
 from .auth import get_current_user
 
 router = APIRouter(prefix="/blocklist", tags=["blocklist"])
+
+# Clé secrète partagée avec Squid (réseau Docker interne uniquement)
+INTERNAL_SECRET = "squid-internal-secret-2024"
 
 CATEGORY_DOMAINS: dict[str, list[str]] = {
 
@@ -199,6 +203,7 @@ CATEGORY_DOMAINS: dict[str, list[str]] = {
     ],
 }
 
+
 class DynamicDomainAdd(BaseModel):
     domain: str
     category: str
@@ -260,7 +265,44 @@ async def get_domains_for_agent(child_id: str, current_user=Depends(get_current_
 
 @router.post("/dynamic/add")
 async def add_dynamic_domain(payload: DynamicDomainAdd, current_user=Depends(get_current_user)):
-    """Squid/TF-IDF (Windows) soumet un nouveau domaine découvert."""
+    """Squid/TF-IDF (Windows) soumet un nouveau domaine découvert. (JWT requis)"""
+    db = get_db()
+    domain = payload.domain.lower().strip().lstrip("www.")
+    existing = await db.dynamic_blocklist.find_one({"domain": domain})
+    if existing:
+        if payload.confidence > existing.get("confidence", 0):
+            await db.dynamic_blocklist.update_one(
+                {"domain": domain},
+                {"$set": {"confidence": payload.confidence, "updated_at": datetime.utcnow()}}
+            )
+        return {"status": "already_exists", "domain": domain}
+
+    await db.dynamic_blocklist.insert_one({
+        "domain": domain,
+        "category": payload.category.lower(),
+        "source": payload.source,
+        "confidence": payload.confidence,
+        "global_block": False,
+        "created_at": datetime.utcnow(),
+        "updated_at": datetime.utcnow(),
+    })
+    return {"status": "added", "domain": domain, "category": payload.category}
+
+
+@router.post("/dynamic/add_internal")
+async def add_dynamic_domain_internal(
+    payload: DynamicDomainAdd,
+    x_internal_secret: str = Header(default="")
+):
+    """
+    Endpoint interne appelé par Squid (squid_https_blocker + squid_redirector).
+    Sécurisé par clé secrète partagée — réseau Docker interne uniquement, pas de JWT.
+    Quand Squid/TF-IDF découvre un nouveau domaine malveillant sur Windows,
+    il l'ajoute ici → Android le bloquera automatiquement à la prochaine sync (toutes les 2 min).
+    """
+    if x_internal_secret != INTERNAL_SECRET:
+        raise HTTPException(403, "Forbidden — clé interne invalide")
+
     db = get_db()
     domain = payload.domain.lower().strip().lstrip("www.")
     existing = await db.dynamic_blocklist.find_one({"domain": domain})

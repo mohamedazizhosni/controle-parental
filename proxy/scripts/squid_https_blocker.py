@@ -7,6 +7,8 @@ import urllib.request
 CONFIG_FILE  = "/app/ia_config/blocked_categories.json"
 BACKEND_URL  = "http://backend:8000"
 IA_URL       = "http://ia:8001"
+# Clé secrète partagée avec le backend pour l'endpoint interne (sans JWT)
+INTERNAL_SECRET = "squid-internal-secret-2024"
 
 sys.path.insert(0, '/usr/local/bin')
 try:
@@ -83,10 +85,41 @@ def ask_ia(domain: str):
             cat     = data.get("category", "safe")
             conf    = data.get("confidence", 0)
             log(f"IA domain={domain} blocked={blocked} cat={cat} conf={conf}")
-            return blocked, cat
+            return blocked, cat, conf
     except Exception as e:
         log(f"ask_ia error domain={domain}: {e}")
-        return False, "safe"
+        return False, "safe", 0.0
+
+
+def push_to_backend_blocklist(domain: str, category: str, confidence: float, source: str = "squid_tfidf"):
+    """
+    Pousse un domaine découvert par Squid/TF-IDF vers la blacklist dynamique du backend.
+    Android lira automatiquement cette liste via /api/v1/blocklist/domains/{child_id}/agent.
+    Utilise l'endpoint interne (sans JWT) sécurisé par clé secrète.
+    """
+    try:
+        dl = domain.lower().strip()
+        if dl.startswith("www."):
+            dl = dl[4:]
+        data = json.dumps({
+            "domain": dl,
+            "category": category,
+            "source": source,
+            "confidence": confidence,
+        }).encode()
+        req = urllib.request.Request(
+            f"{BACKEND_URL}/api/v1/blocklist/dynamic/add_internal",
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "X-Internal-Secret": INTERNAL_SECRET,
+            },
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=2)
+        log(f"push_to_backend_blocklist OK domain={dl} cat={category}")
+    except Exception as e:
+        log(f"push_to_backend_blocklist error domain={domain}: {e}")
 
 
 def send_history(client_ip: str, domain: str, blocked: bool):
@@ -123,9 +156,15 @@ def main():
             blocked_cats = load_blocked_categories()
 
             blocked, category = should_block_instant(domain, blocked_cats)
+            ia_confidence = 0.0
 
             if not blocked and blocked_cats:
-                blocked, category = ask_ia(domain)
+                blocked, category, ia_confidence = ask_ia(domain)
+                # Si TF-IDF a découvert un nouveau domaine malveillant →
+                # le pousser dans la blacklist dynamique backend
+                # → Android le bloquera automatiquement à la prochaine sync
+                if blocked and ia_confidence >= 0.60:
+                    push_to_backend_blocklist(domain, category, ia_confidence, source="squid_tfidf")
 
             send_history(client_ip, domain, blocked)
 
