@@ -10,7 +10,14 @@ router = APIRouter(prefix="/app_usage", tags=["App Usage Android"])
 @router.post("/report")
 async def report_app_usage(report: AppUsageReport):
     db = get_db()
-    device = await db.devices.find_one({"child_id": report.child_id})
+    # Chercher le device par active_child_id (après select_child)
+    # OU par child_id (défini lors du pairing initial)
+    device = await db.devices.find_one({
+        "$or": [
+            {"active_child_id": report.child_id},
+            {"child_id": report.child_id},
+        ]
+    })
     if not device:
         raise HTTPException(404, "Device not found")
     for app in report.apps:

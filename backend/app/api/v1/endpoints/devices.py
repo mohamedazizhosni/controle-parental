@@ -3,12 +3,16 @@ from datetime import datetime
 from bson import ObjectId
 import os
 import json
+from zoneinfo import ZoneInfo
 from ....db.mongodb import get_db
 from .auth import get_current_user
 
 router = APIRouter(prefix="/devices", tags=["Devices"])
 
 CONFIG_FILE = "/app/ia_config/blocked_categories.json"
+
+# Timezone configurable via variable d'environnement (défaut : Algérie UTC+1)
+_TZ = ZoneInfo(os.environ.get("APP_TIMEZONE", "Africa/Algiers"))
 
 
 def write_categories(categories: list):
@@ -25,7 +29,7 @@ def _slot_to_minutes(t: str) -> int:
 def _is_in_allowed_slot(slots: list) -> bool:
     if not slots:
         return False
-    now = datetime.utcnow()
+    now = datetime.now(_TZ)
     current_minutes = now.hour * 60 + now.minute
     for slot in slots:
         start = _slot_to_minutes(slot["start"])

@@ -90,7 +90,11 @@ KEYWORDS = {
         "y0utube", "facebo0k",
     ],
 
-    "games": [
+       "games": [
+        # Jeux d'échecs — bloqués par domaine/keyword
+        "chess", "chess.com", "lichess", "lichess.org",
+        "chess24", "chess24.com", "chessbase", "chesskid",
+        "sparkchess", "playchess", "chessgames",
         # Jeux populaires
         "minecraft", "fortnite", "roblox", "roblox.com",
         "steam", "steampowered", "epicgames", "origin", "battlenet",
@@ -112,8 +116,6 @@ KEYWORDS = {
         "mmorpg", "moba", "fps-game", "rpg-game",
         # Français
         "jeux-en-ligne", "jeux-video", "jeu-gratuit", "jouer-en-ligne",
-        "jeux", "jouer", "jeu-en-ligne", "flash-jeux", "jeux-flash",
-        "jeux-gratuits", "jeu-gratuit", "jeux-fille", "jeux-garcon",
         # Argot
         "gg", "noob", "pwned", "tryhard", "sweat", "laggy",
     ],
@@ -206,7 +208,17 @@ BLOCKED_DOMAINS = {
     ],
 
     "games": [
-        # ── Sites de jeux en ligne français (ajoutés) ──
+      # Jeux d'échecs
+        "chess.com", "www.chess.com", "live.chess.com",
+        "lichess.org", "www.lichess.org", 
+        "chess24.com", "www.chess24.com",
+        "chessbase.com", "chesskid.com",
+        "sparkchess.com", "playchess.com",
+        "chessclub.com", "freechess.org",
+        "chess.org", "chessgames.com",
+      # Autres jeux
+        "roblox.com", "bloxstrap.com",
+  # ── Sites de jeux en ligne français (ajoutés) ──
         "jeux.fr", "jeux.com", "jeu.fr", "jeu.com",
         "jeux-gratuits.fr", "jeuxgratuits.fr", "jeux-gratuits.com",
         "jeux-en-ligne.fr", "jeuxenligne.fr", "jeux-en-ligne.com",
