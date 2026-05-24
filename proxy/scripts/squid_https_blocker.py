@@ -34,17 +34,35 @@ def load_blocked_categories():
 
 
 def extract_domain_from_url(url: str) -> str:
-    """Extrait le domaine d'une URL complète reçue via %URI."""
+    """
+    Extrait le domaine depuis :
+      - URL complète  : https://roblox.com/path  → roblox.com
+      - host:port     : roblox.com:443            → roblox.com  ← CORRIGÉ
+    Squid envoie %URI sous forme "host:443" pour les requêtes CONNECT (HTTPS).
+    urlparse("roblox.com:443") interprète "roblox.com" comme scheme et "443"
+    comme path → retournait "443" au lieu de "roblox.com".
+    """
     try:
+        url = url.strip()
+
+        # ── Cas CONNECT Squid : "host:port" sans scheme ───────────────────────
+        if not url.startswith("http://") and not url.startswith("https://"):
+            host_part = url.split("/")[0]       # retire le path éventuel
+            domain    = host_part.split(":")[0] # retire le port
+            if domain.startswith("www."):
+                domain = domain[4:]
+            return domain.lower().strip()
+
+        # ── URL complète avec scheme ──────────────────────────────────────────
         parsed = urlparse(url)
         domain = parsed.netloc or parsed.path.split('/')[0]
-        # Retire le port éventuel (ex: example.com:443)
-        domain = domain.split(":")[0]
+        domain = domain.split(":")[0]           # retire le port éventuel
         if domain.startswith("www."):
             domain = domain[4:]
         return domain.lower().strip()
+
     except Exception:
-        return url.lower()
+        return url.split(":")[0].split("/")[0].lower().strip()
 
 
 def is_whitelisted(domain: str) -> bool:
@@ -96,8 +114,8 @@ def ask_ia(full_url: str):
     """
     try:
         payload = json.dumps({
-            "url": full_url,        # URL complète ex: https://site.com/page/video
-            "fetch_content": True,  # L'IA va chercher et analyser le contenu réel
+            "url": full_url,
+            "fetch_content": True,
         }).encode()
         req = urllib.request.Request(
             f"{IA_URL}/predict",
@@ -153,7 +171,7 @@ def send_history(client_ip: str, url: str, blocked: bool):
     try:
         data = json.dumps({
             "ip": client_ip,
-            "url": url,       # URL complète dans l'historique
+            "url": url,
             "blocked": blocked,
         }).encode()
         req = urllib.request.Request(
@@ -176,10 +194,10 @@ def main():
             continue
 
         parts     = line.split()
-        full_url  = parts[0]   # %URI → URL COMPLÈTE ex: https://example.com/path/page?q=test
+        full_url  = parts[0]   # %URI → URL complète OU host:port (CONNECT HTTPS)
         client_ip = parts[1] if len(parts) > 1 else "0.0.0.0"
 
-        # Extraire le domaine depuis l'URL complète pour les checks instantanés
+        # Extraire le domaine — gère maintenant host:port ET https://...
         domain = extract_domain_from_url(full_url)
 
         try:
@@ -190,8 +208,13 @@ def main():
             ia_confidence = 0.0
 
             if not blocked and blocked_cats:
+                # Pour l'IA : reconstruire une URL valide si c'était un host:port
+                ia_url = full_url
+                if not full_url.startswith("http://") and not full_url.startswith("https://"):
+                    ia_url = f"https://{domain}"
+
                 # Étape 2 : analyse IA du contenu de la PAGE SPÉCIFIQUE visitée
-                blocked, category, ia_confidence = ask_ia(full_url)
+                blocked, category, ia_confidence = ask_ia(ia_url)
 
                 # Si l'IA a confirmé → pousser le domaine dans la blacklist dynamique
                 if blocked and ia_confidence >= 0.60:
@@ -199,8 +222,11 @@ def main():
                         domain, category, ia_confidence, source="squid_tfidf"
                     )
 
-            # Enregistrer l'URL complète dans l'historique
-            send_history(client_ip, full_url, blocked)
+            # Enregistrer dans l'historique (URL reconstruite si nécessaire)
+            history_url = full_url
+            if not full_url.startswith("http://") and not full_url.startswith("https://"):
+                history_url = f"https://{domain}"
+            send_history(client_ip, history_url, blocked)
 
             # OK = bloquer, ERR = autoriser (convention Squid external_acl)
             answer = "OK" if blocked else "ERR"
