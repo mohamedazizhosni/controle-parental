@@ -3,11 +3,11 @@ import sys
 import json
 import os
 import urllib.request
+from urllib.parse import urlparse
 
-CONFIG_FILE  = "/app/ia_config/blocked_categories.json"
-BACKEND_URL  = "http://backend:8000"
-IA_URL       = "http://ia:8001"
-# Clé secrète partagée avec le backend pour l'endpoint interne (sans JWT)
+CONFIG_FILE     = "/app/ia_config/blocked_categories.json"
+BACKEND_URL     = "http://backend:8000"
+IA_URL          = "http://ia:8001"
 INTERNAL_SECRET = "squid-internal-secret-2024"
 
 sys.path.insert(0, '/usr/local/bin')
@@ -33,6 +33,20 @@ def load_blocked_categories():
     return []
 
 
+def extract_domain_from_url(url: str) -> str:
+    """Extrait le domaine d'une URL complète reçue via %URI."""
+    try:
+        parsed = urlparse(url)
+        domain = parsed.netloc or parsed.path.split('/')[0]
+        # Retire le port éventuel (ex: example.com:443)
+        domain = domain.split(":")[0]
+        if domain.startswith("www."):
+            domain = domain[4:]
+        return domain.lower().strip()
+    except Exception:
+        return url.lower()
+
+
 def is_whitelisted(domain: str) -> bool:
     dl = domain.lower().strip()
     if dl.startswith("www."):
@@ -44,6 +58,10 @@ def is_whitelisted(domain: str) -> bool:
 
 
 def should_block_instant(domain: str, blocked_cats: list):
+    """
+    Blocage instantané par domaine et mots-clés dans l'URL.
+    Rapide, sans appel réseau.
+    """
     if not blocked_cats:
         return False, "safe"
 
@@ -54,12 +72,14 @@ def should_block_instant(domain: str, blocked_cats: list):
     if is_whitelisted(dl):
         return False, "safe"
 
+    # Correspondance exacte de domaine dans BLOCKED_DOMAINS
     for cat in blocked_cats:
         for bd in BLOCKED_DOMAINS.get(cat, []):
             if dl == bd or dl.endswith("." + bd):
                 log(f"BLOCK instant domain={domain} cat={cat} matched={bd}")
                 return True, cat
 
+    # Mots-clés dans le domaine
     for cat in blocked_cats:
         for word in KEYWORDS.get(cat, []):
             if word.lower() in dl:
@@ -69,33 +89,39 @@ def should_block_instant(domain: str, blocked_cats: list):
     return False, "safe"
 
 
-def ask_ia(domain: str):
+def ask_ia(full_url: str):
+    """
+    Envoie l'URL COMPLÈTE à l'IA pour analyse du contenu
+    de la PAGE SPÉCIFIQUE visitée (plus seulement la page d'accueil).
+    """
     try:
-        url     = f"https://{domain}"
-        payload = json.dumps({"url": url, "fetch_content": True}).encode()
-        req     = urllib.request.Request(
+        payload = json.dumps({
+            "url": full_url,        # URL complète ex: https://site.com/page/video
+            "fetch_content": True,  # L'IA va chercher et analyser le contenu réel
+        }).encode()
+        req = urllib.request.Request(
             f"{IA_URL}/predict",
             data=payload,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=12) as resp:
-            data    = json.loads(resp.read())
-            blocked = data.get("blocked", False)
-            cat     = data.get("category", "safe")
-            conf    = data.get("confidence", 0)
-            log(f"IA domain={domain} blocked={blocked} cat={cat} conf={conf}")
+            data       = json.loads(resp.read())
+            blocked    = data.get("blocked", False)
+            cat        = data.get("category", "safe")
+            conf       = data.get("confidence", 0)
+            analyzed   = data.get("content_analyzed", False)
+            log(f"IA url={full_url} blocked={blocked} cat={cat} conf={conf} content_analyzed={analyzed}")
             return blocked, cat, conf
     except Exception as e:
-        log(f"ask_ia error domain={domain}: {e}")
+        log(f"ask_ia error url={full_url}: {e}")
         return False, "safe", 0.0
 
 
 def push_to_backend_blocklist(domain: str, category: str, confidence: float, source: str = "squid_tfidf"):
     """
-    Pousse un domaine découvert par Squid/TF-IDF vers la blacklist dynamique du backend.
-    Android lira automatiquement cette liste via /api/v1/blocklist/domains/{child_id}/agent.
-    Utilise l'endpoint interne (sans JWT) sécurisé par clé secrète.
+    Pousse un domaine découvert vers la blacklist dynamique backend.
+    Android synchronisera automatiquement cette liste.
     """
     try:
         dl = domain.lower().strip()
@@ -122,11 +148,12 @@ def push_to_backend_blocklist(domain: str, category: str, confidence: float, sou
         log(f"push_to_backend_blocklist error domain={domain}: {e}")
 
 
-def send_history(client_ip: str, domain: str, blocked: bool):
+def send_history(client_ip: str, url: str, blocked: bool):
+    """Enregistre l'URL complète visitée dans l'historique backend."""
     try:
         data = json.dumps({
             "ip": client_ip,
-            "url": f"https://{domain}",
+            "url": url,       # URL complète dans l'historique
             "blocked": blocked,
         }).encode()
         req = urllib.request.Request(
@@ -140,7 +167,7 @@ def send_history(client_ip: str, domain: str, blocked: bool):
 
 
 def main():
-    log("squid_https_blocker started")
+    log("squid_https_blocker started — mode analyse page spécifique (%URI)")
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -149,32 +176,40 @@ def main():
             continue
 
         parts     = line.split()
-        domain    = parts[0]
+        full_url  = parts[0]   # %URI → URL COMPLÈTE ex: https://example.com/path/page?q=test
         client_ip = parts[1] if len(parts) > 1 else "0.0.0.0"
+
+        # Extraire le domaine depuis l'URL complète pour les checks instantanés
+        domain = extract_domain_from_url(full_url)
 
         try:
             blocked_cats = load_blocked_categories()
 
+            # Étape 1 : blocage instantané par domaine (sans appel réseau → rapide)
             blocked, category = should_block_instant(domain, blocked_cats)
             ia_confidence = 0.0
 
             if not blocked and blocked_cats:
-                blocked, category, ia_confidence = ask_ia(domain)
-                # Si TF-IDF a découvert un nouveau domaine malveillant →
-                # le pousser dans la blacklist dynamique backend
-                # → Android le bloquera automatiquement à la prochaine sync
+                # Étape 2 : analyse IA du contenu de la PAGE SPÉCIFIQUE visitée
+                blocked, category, ia_confidence = ask_ia(full_url)
+
+                # Si l'IA a confirmé → pousser le domaine dans la blacklist dynamique
                 if blocked and ia_confidence >= 0.60:
-                    push_to_backend_blocklist(domain, category, ia_confidence, source="squid_tfidf")
+                    push_to_backend_blocklist(
+                        domain, category, ia_confidence, source="squid_tfidf"
+                    )
 
-            send_history(client_ip, domain, blocked)
+            # Enregistrer l'URL complète dans l'historique
+            send_history(client_ip, full_url, blocked)
 
+            # OK = bloquer, ERR = autoriser (convention Squid external_acl)
             answer = "OK" if blocked else "ERR"
-            log(f"domain={domain} → {answer}")
+            log(f"url={full_url} domain={domain} → {answer} cat={category}")
             sys.stdout.write(f"{answer}\n")
             sys.stdout.flush()
 
         except Exception as e:
-            log(f"CRITICAL error domain={domain}: {e}")
+            log(f"CRITICAL error url={full_url}: {e}")
             sys.stdout.write("ERR\n")
             sys.stdout.flush()
 

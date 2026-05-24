@@ -3,6 +3,7 @@ from datetime import datetime
 from bson import ObjectId
 import os
 import json
+import urllib.request
 from zoneinfo import ZoneInfo
 from ....db.mongodb import get_db
 from .auth import get_current_user
@@ -10,6 +11,7 @@ from .auth import get_current_user
 router = APIRouter(prefix="/devices", tags=["Devices"])
 
 CONFIG_FILE = "/app/ia_config/blocked_categories.json"
+IA_URL = "http://ia:8001"
 
 # Timezone configurable via variable d'environnement (défaut : Algérie UTC+1)
 _TZ = ZoneInfo(os.environ.get("APP_TIMEZONE", "Africa/Algiers"))
@@ -19,6 +21,20 @@ def write_categories(categories: list):
     os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
     with open(CONFIG_FILE, "w") as f:
         json.dump({"blocked_categories": categories}, f)
+
+
+def clear_ia_cache():
+    """Vide le cache de l'IA après un changement de profil enfant."""
+    try:
+        req = urllib.request.Request(
+            f"{IA_URL}/cache/clear",
+            data=b"",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=3)
+    except Exception as e:
+        print(f"[devices] clear_ia_cache error: {e}")
 
 
 def _slot_to_minutes(t: str) -> int:
@@ -82,7 +98,6 @@ async def get_all_devices_status(current_user=Depends(get_current_user)):
                     "blocked_categories": child.get("blocked_categories", []),
                 }
 
-        # Récupérer la dernière IP connue
         ip_mapping = await db.ip_mapping.find_one({"device_name": device_name})
         last_ip = ip_mapping.get("ip") if ip_mapping else None
         last_seen = ip_mapping.get("updated_at") if ip_mapping else None
@@ -146,6 +161,7 @@ async def select_child(device_name: str, child_id: str, request: Request):
     )
     blocked_cats = child.get("blocked_categories", [])
     write_categories(blocked_cats)
+    clear_ia_cache()
     return {"valid": True, "message": f"Active child set to {child['name']}, categories updated"}
 
 
@@ -231,6 +247,7 @@ async def verify_child_pin(device_name: str, child_id: str, child_pin: str, requ
         )
         blocked_cats = child.get("blocked_categories", [])
         write_categories(blocked_cats)
+        clear_ia_cache()
         return {"valid": True, "child_id": child_id, "name": child["name"]}
     if child_pin == stored_pin:
         await db.devices.update_one(
@@ -239,6 +256,7 @@ async def verify_child_pin(device_name: str, child_id: str, child_pin: str, requ
         )
         blocked_cats = child.get("blocked_categories", [])
         write_categories(blocked_cats)
+        clear_ia_cache()
         return {"valid": True, "child_id": child_id, "name": child["name"]}
     else:
         return {"valid": False, "message": "PIN enfant incorrect"}

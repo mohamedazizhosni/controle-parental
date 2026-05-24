@@ -168,14 +168,18 @@ class PredictResponse(BaseModel):
 
 @app.post("/predict", response_model=PredictResponse)
 async def predict(req: PredictRequest):
-    cache_key = hashlib.md5(f"{req.url}:{req.fetch_content}".encode()).hexdigest()
+    blocked_cats = load_blocked_categories()
+
+    # ✅ Inclure les catégories bloquées dans la clé de cache
+    # Ainsi, quand un nouveau profil enfant est activé, le cache est automatiquement invalidé
+    cats_key = ",".join(sorted(blocked_cats))
+    cache_key = hashlib.md5(f"{req.url}:{req.fetch_content}:{cats_key}".encode()).hexdigest()
 
     if cache_key in url_cache:
         cached_result = url_cache[cache_key].copy()
         cached_result["cached"] = True
         return PredictResponse(**cached_result)
 
-    blocked_cats = load_blocked_categories()
     if not blocked_cats:
         result = {"category": "safe", "confidence": 1.0, "blocked": False, "content_analyzed": False}
         url_cache[cache_key] = result
@@ -258,6 +262,13 @@ async def cache_stats():
         "max_size": url_cache.maxsize,
         "ttl_seconds": url_cache.ttl,
     }
+
+
+# ✅ Endpoint pour vider le cache (appelé quand un profil enfant change)
+@app.post("/cache/clear")
+async def cache_clear():
+    url_cache.clear()
+    return {"message": "Cache cleared", "cache_size": 0}
 
 
 @app.get("/keywords/stats")
