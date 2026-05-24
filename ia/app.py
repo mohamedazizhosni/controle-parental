@@ -15,9 +15,9 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.pipeline import Pipeline
 import joblib
-import logging  # ✅ AJOUT
+import logging
 
-# ✅ AJOUT — logger pour diagnostiquer les échecs de fetch et les scores TF-IDF
+# Logger pour diagnostiquer les échecs de fetch et les scores TF-IDF
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ia")
 
@@ -117,6 +117,9 @@ def extract_domain(url: str) -> str:
     try:
         parsed = urlparse(url)
         domain = parsed.netloc or parsed.path.split('/')[0]
+        # Correction : supprimer le port si présent (ex: host:443 depuis Squid CONNECT)
+        if ":" in domain:
+            domain = domain.split(":")[0]
         if domain.startswith('www.'):
             domain = domain[4:]
         return domain.lower()
@@ -155,7 +158,7 @@ def fetch_text_from_url(url: str, timeout: int = 5) -> str:
         text = re.sub(r'\s+', ' ', text)
         return text.lower()[:8000]
     except Exception as e:
-        # ✅ CORRECTION — log l'échec au lieu de l'ignorer silencieusement
+        # Log l'échec au lieu de l'ignorer silencieusement
         logger.warning(f"fetch_text_from_url FAILED url={url} reason={type(e).__name__}: {e}")
         return ""
 
@@ -177,7 +180,7 @@ class PredictResponse(BaseModel):
 async def predict(req: PredictRequest):
     blocked_cats = load_blocked_categories()
 
-    # ✅ Inclure les catégories bloquées dans la clé de cache
+    # Inclure les catégories bloquées dans la clé de cache
     # Ainsi, quand un nouveau profil enfant est activé, le cache est automatiquement invalidé
     cats_key = ",".join(sorted(blocked_cats))
     cache_key = hashlib.md5(f"{req.url}:{req.fetch_content}:{cats_key}".encode()).hexdigest()
@@ -208,23 +211,28 @@ async def predict(req: PredictRequest):
                 url_cache[cache_key] = result
                 return PredictResponse(**result)
 
-    # Analyse 2 : mots-clés dans le domaine / URL
+    # Analyse 2 : mots-clés dans les PARTIES du domaine uniquement (pas substring)
+    # Correction : évite les faux positifs "essex"→"sex", "better"→"bet", "alphabet"→"bet"
+    # Le mot doit être une partie entière séparée par . - _ / ? = & et avoir au moins 4 caractères
+    domain_parts = set(re.split(r'[\.\-\_]', domain))
     url_lower = req.url.lower()
+    url_parts = set(re.split(r'[\.\-\_\/\?\=\&]', url_lower))
+
     for cat in blocked_cats:
         for word in KEYWORDS.get(cat, []):
-            if word in domain or word in url_lower:
-                result = {"category": cat, "confidence": 0.95, "blocked": True, "content_analyzed": False}
+            if len(word) >= 4 and (word in domain_parts or word in url_parts):
+                result = {"category": cat, "confidence": 0.90, "blocked": True, "content_analyzed": False}
                 url_cache[cache_key] = result
                 return PredictResponse(**result)
 
-    # Analyse 3 : fetch contenu HTTP ET HTTPS + TF-IDF + Naive Bayes
+    # Analyse 3 : fetch contenu HTTP/HTTPS + TF-IDF + Naive Bayes
     text = ""
     content_analyzed = False
     if req.fetch_content and (req.url.startswith("http://") or req.url.startswith("https://")):
         text = fetch_text_from_url(req.url)
         content_analyzed = bool(text)
 
-    # ✅ CORRECTION — on analyse toujours avec TF-IDF, que le fetch ait réussi ou non.
+    # On analyse toujours avec TF-IDF, que le fetch ait réussi ou non.
     # Avant : "if text:" → si fetch échoue (Cloudflare, anti-bot), classé "safe" directement.
     # Maintenant : TF-IDF tourne sur domaine + URL (minimum), + contenu si disponible.
     combined = (req.url + " " + domain + " " + text).lower()
@@ -236,7 +244,7 @@ async def predict(req: PredictRequest):
     best_cat = classes[best_idx]
     best_conf = float(proba[best_idx])
 
-    # ✅ AJOUT — log le résultat TF-IDF pour pouvoir diagnostiquer
+    # Log le résultat TF-IDF pour pouvoir diagnostiquer
     logger.info(
         f"TF-IDF url={req.url} domain={domain} "
         f"best={best_cat}({best_conf:.2f}) "
@@ -244,7 +252,7 @@ async def predict(req: PredictRequest):
         f"blocked_cats={blocked_cats}"
     )
 
-    # ✅ CORRECTION — seuil adaptatif :
+    # Seuil adaptatif :
     # 0.55 si contenu fetché (plus de signal disponible)
     # 0.70 si domaine seul (plus prudent pour éviter faux positifs)
     # Avant : 0.40 fixe (trop bas → faux positifs)
@@ -262,7 +270,7 @@ async def predict(req: PredictRequest):
     # 3b — Fallback comptage de mots-clés si TF-IDF hésitant
     for cat in blocked_cats:
         matches = sum(1 for word in KEYWORDS.get(cat, []) if word in combined)
-        # ✅ CORRECTION — 1 match suffit si pas de contenu (domaine seul)
+        # 1 match suffit si pas de contenu (domaine seul)
         # 2 matches requis si contenu disponible (évite faux positifs)
         # Avant : 2 toujours, ce qui empêchait le blocage sur domaine seul
         min_matches = 2 if content_analyzed else 1
@@ -295,7 +303,7 @@ async def cache_stats():
     }
 
 
-# ✅ Endpoint pour vider le cache (appelé quand un profil enfant change)
+# Endpoint pour vider le cache (appelé quand un profil enfant change)
 @app.post("/cache/clear")
 async def cache_clear():
     url_cache.clear()
