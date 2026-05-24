@@ -15,6 +15,11 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.pipeline import Pipeline
 import joblib
+import logging  # ✅ AJOUT
+
+# ✅ AJOUT — logger pour diagnostiquer les échecs de fetch et les scores TF-IDF
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("ia")
 
 app = FastAPI(title="IA Parental Control")
 
@@ -149,7 +154,9 @@ def fetch_text_from_url(url: str, timeout: int = 5) -> str:
         text = " ".join(parts)
         text = re.sub(r'\s+', ' ', text)
         return text.lower()[:8000]
-    except Exception:
+    except Exception as e:
+        # ✅ CORRECTION — log l'échec au lieu de l'ignorer silencieusement
+        logger.warning(f"fetch_text_from_url FAILED url={url} reason={type(e).__name__}: {e}")
         return ""
 
 
@@ -217,33 +224,57 @@ async def predict(req: PredictRequest):
         text = fetch_text_from_url(req.url)
         content_analyzed = bool(text)
 
-    if text:
-        combined = (req.url + " " + domain + " " + text).lower()
+    # ✅ CORRECTION — on analyse toujours avec TF-IDF, que le fetch ait réussi ou non.
+    # Avant : "if text:" → si fetch échoue (Cloudflare, anti-bot), classé "safe" directement.
+    # Maintenant : TF-IDF tourne sur domaine + URL (minimum), + contenu si disponible.
+    combined = (req.url + " " + domain + " " + text).lower()
 
-        # 3a — Analyse TF-IDF + Naive Bayes
-        proba = tfidf_model.predict_proba([combined])[0]
-        classes = tfidf_model.classes_
-        best_idx = int(np.argmax(proba))
-        best_cat = classes[best_idx]
-        best_conf = float(proba[best_idx])
+    # 3a — Analyse TF-IDF + Naive Bayes
+    proba = tfidf_model.predict_proba([combined])[0]
+    classes = tfidf_model.classes_
+    best_idx = int(np.argmax(proba))
+    best_cat = classes[best_idx]
+    best_conf = float(proba[best_idx])
 
-        if best_cat in blocked_cats and best_conf >= 0.40:
+    # ✅ AJOUT — log le résultat TF-IDF pour pouvoir diagnostiquer
+    logger.info(
+        f"TF-IDF url={req.url} domain={domain} "
+        f"best={best_cat}({best_conf:.2f}) "
+        f"content_fetched={content_analyzed} "
+        f"blocked_cats={blocked_cats}"
+    )
+
+    # ✅ CORRECTION — seuil adaptatif :
+    # 0.55 si contenu fetché (plus de signal disponible)
+    # 0.70 si domaine seul (plus prudent pour éviter faux positifs)
+    # Avant : 0.40 fixe (trop bas → faux positifs)
+    threshold = 0.55 if content_analyzed else 0.70
+    if best_cat in blocked_cats and best_conf >= threshold:
+        result = {
+            "category": best_cat,
+            "confidence": round(best_conf, 3),
+            "blocked": True,
+            "content_analyzed": content_analyzed,
+        }
+        url_cache[cache_key] = result
+        return PredictResponse(**result)
+
+    # 3b — Fallback comptage de mots-clés si TF-IDF hésitant
+    for cat in blocked_cats:
+        matches = sum(1 for word in KEYWORDS.get(cat, []) if word in combined)
+        # ✅ CORRECTION — 1 match suffit si pas de contenu (domaine seul)
+        # 2 matches requis si contenu disponible (évite faux positifs)
+        # Avant : 2 toujours, ce qui empêchait le blocage sur domaine seul
+        min_matches = 2 if content_analyzed else 1
+        if matches >= min_matches:
             result = {
-                "category": best_cat,
-                "confidence": round(best_conf, 3),
+                "category": cat,
+                "confidence": 0.75,
                 "blocked": True,
-                "content_analyzed": True,
+                "content_analyzed": content_analyzed,
             }
             url_cache[cache_key] = result
             return PredictResponse(**result)
-
-        # 3b — Fallback comptage de mots-clés si TF-IDF hésitant
-        for cat in blocked_cats:
-            matches = sum(1 for word in KEYWORDS.get(cat, []) if word in combined)
-            if matches >= 2:
-                result = {"category": cat, "confidence": 0.75, "blocked": True, "content_analyzed": True}
-                url_cache[cache_key] = result
-                return PredictResponse(**result)
 
     result = {"category": "safe", "confidence": 0.5, "blocked": False, "content_analyzed": content_analyzed}
     url_cache[cache_key] = result
