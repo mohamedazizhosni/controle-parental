@@ -17,7 +17,7 @@ class HistoryLog(BaseModel):
 
 @router.post("/log")
 async def log_history(log: HistoryLog, request: Request):
-    """Appelé par le proxy Squid pour enregistrer une navigation (HTTP et HTTPS)."""
+    """Appelé par le proxy Squid ou l'agent Android pour enregistrer une navigation."""
     db = get_db()
 
     source_ip = log.ip
@@ -133,16 +133,35 @@ async def log_history(log: HistoryLog, request: Request):
 
         parent_email = device.get("parent_email")
         if parent_email:
+            # Envoyer via WebSocket (temps réel si connecté)
             try:
-                from .notifications import manager
-                await manager.send_personal_message({
+                from .notifications import manager, _send_fcm_push
+                ws_message = {
                     "type": "blocked_site",
                     "child_name": child_name,
                     "url": log.url,
                     "category": category,
                     "device_name": device.get("device_name"),
                     "timestamp": now.isoformat(),
-                }, parent_email)
+                }
+                await manager.send_personal_message(ws_message, parent_email)
+
+                # FCM fallback si le parent n'est pas connecté via WebSocket
+                if not manager.is_connected(parent_email):
+                    await _send_fcm_push(
+                        db,
+                        parent_email,
+                        title=f"⚠️ Site bloqué — {child_name}",
+                        body=f"Tentative d'accès à {log.url} ({category})",
+                        data={
+                            "type": "blocked_site",
+                            "child_id": child_id,
+                            "child_name": child_name,
+                            "url": log.url,
+                            "category": category,
+                            "route": "/alerts",
+                        },
+                    )
             except Exception:
                 pass
 

@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api.v1.endpoints import (
     auth, children, pairing, session,
     ia_config, devices, history, notifications,
-    stats, fcm, apps, app_usage, blocklist
+    stats, fcm, apps, app_usage, blocklist, alerts
 )
 from .db.mongodb import connect_to_mongo, close_mongo_connection
 from .core.config import settings
@@ -23,7 +23,7 @@ app.add_middleware(
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "x-internal-secret"],
 )
 
 @app.on_event("startup")
@@ -34,7 +34,6 @@ async def startup():
 async def shutdown():
     await close_mongo_connection()
 
-# Endpoints existants
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(children.router, prefix="/api/v1")
 app.include_router(pairing.router, prefix="/api/v1")
@@ -44,14 +43,11 @@ app.include_router(devices.router, prefix="/api/v1")
 app.include_router(history.router, prefix="/api/v1")
 app.include_router(notifications.router, prefix="/api/v1")
 app.include_router(stats.router, prefix="/api/v1")
-
-# Nouveaux endpoints Android
 app.include_router(fcm.router, prefix="/api/v1")
 app.include_router(apps.router, prefix="/api/v1")
 app.include_router(app_usage.router, prefix="/api/v1")
-
-# Blacklist partagée Windows+Android
 app.include_router(blocklist.router, prefix="/api/v1")
+app.include_router(alerts.router, prefix="/api/v1")
 
 @app.get("/")
 async def root():
