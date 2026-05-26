@@ -94,3 +94,5 @@ dist/
 *.temp
 temp/
 tmp/
+firebase-service-account.json
+*.json
