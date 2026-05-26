@@ -1,8 +1,7 @@
 """
 Endpoint pour signaler les tentatives de contournement du contrôle parental.
 POST /api/v1/alerts/report  → appelé par l'agent Android ou Windows
-GET  /api/v1/alerts         → liste les alertes pour le parent connecté
-PUT  /api/v1/alerts/{id}/read → marquer comme lue
+GET  /api/v1/alerts/all     → liste les alertes (appel interne)
 """
 
 from fastapi import APIRouter, Header, Request
@@ -13,35 +12,24 @@ from ....db.mongodb import get_db
 
 router = APIRouter(prefix="/alerts", tags=["Alerts"])
 
-# Même clé interne que blocklist.py
 INTERNAL_SECRET = "squid-internal-secret-2024"
 
 
 class AlertReport(BaseModel):
     device_name: str
-    alert_type: str   # "vpn_disabled" | "proxy_disabled" | "blocked_site"
+    alert_type: str   # "vpn_disabled" | "vpn_disable_attempt" | "proxy_disabled" | "proxy_disable_attempt"
     message: str
     url: str = ""
 
 
 @router.post("/report")
-async def report_alert(
-    payload: AlertReport,
-    x_internal_secret: str = Header(default=""),
-    request: Request = None,
-):
+async def report_alert(payload: AlertReport):
     """
     Appelé par l'agent Android ou Windows quand l'enfant tente de désactiver
-    le VPN/proxy. Sécurisé par clé interne partagée.
+    le VPN ou le proxy. Aucune authentification requise (réseau local uniquement).
     """
-    if x_internal_secret != INTERNAL_SECRET:
-        # Accepter aussi sans clé (agent Flutter ne peut pas mettre header custom facilement)
-        # On valide seulement que device_name existe en base
-        pass
-
     db = get_db()
 
-    # Trouver le device et l'enfant actif
     device = await db.devices.find_one({"device_name": payload.device_name})
     if not device:
         return {"error": "device not found"}
@@ -57,7 +45,7 @@ async def report_alert(
 
     now = datetime.utcnow()
 
-    # Sauvegarder l'alerte
+    # Sauvegarder l'alerte en base
     alert = {
         "child_id": child_id,
         "child_name": child_name,
@@ -71,51 +59,51 @@ async def report_alert(
     }
     await db.alerts.insert_one(alert)
 
-    if parent_email:
-        try:
-            from .notifications import manager, _send_fcm_push
+    if not parent_email:
+        return {"status": "saved_no_parent"}
 
-            # Choisir l'icône selon le type
-            icon = "🛡️" if "vpn" in payload.alert_type else "⚠️"
-            ws_message = {
-                "type": payload.alert_type,
-                "child_name": child_name,
-                "message": payload.message,
-                "device_name": payload.device_name,
-                "timestamp": now.isoformat(),
-            }
-            await manager.send_personal_message(ws_message, parent_email)
+    try:
+        from .notifications import manager, _send_fcm_push
 
-            # FCM push si le parent n'est pas connecté
-            if not manager.is_connected(parent_email):
-                await _send_fcm_push(
-                    db,
-                    parent_email,
-                    title=f"{icon} Alerte sécurité — {child_name}",
-                    body=payload.message,
-                    data={
-                        "type": payload.alert_type,
-                        "child_id": str(child_id) if child_id else "",
-                        "child_name": child_name,
-                        "device_name": payload.device_name,
-                        "route": "/alerts",
-                    },
-                )
-        except Exception:
-            pass
+        # Choisir le titre selon le type d'alerte
+        if "vpn" in payload.alert_type:
+            icon = "🛡️"
+            subject = "VPN désactivé" if payload.alert_type == "vpn_disabled" else "Tentative désactivation VPN"
+        else:
+            icon = "⚠️"
+            subject = "Proxy désactivé" if payload.alert_type == "proxy_disabled" else "Tentative désactivation proxy"
+
+        # Message WebSocket — contient 'message' pour que notification_service.dart le détecte
+        ws_message = {
+            "type": payload.alert_type,
+            "title": f"{icon} {subject} — {child_name}",
+            "message": payload.message,
+            "child_name": child_name,
+            "device_name": payload.device_name,
+            "timestamp": now.isoformat(),
+        }
+        await manager.send_personal_message(ws_message, parent_email)
+
+        # FCM push si le parent n'est pas connecté via WebSocket
+        if not manager.is_connected(parent_email):
+            await _send_fcm_push(
+                db,
+                parent_email,
+                title=f"{icon} {subject} — {child_name}",
+                body=payload.message,
+                data={
+                    "type": payload.alert_type,
+                    "child_id": str(child_id) if child_id else "",
+                    "child_name": child_name,
+                    "device_name": payload.device_name,
+                    "route": "/alerts",
+                },
+            )
+    except Exception as e:
+        import logging
+        logging.getLogger("alerts").warning(f"Erreur envoi notification alerte: {e}")
 
     return {"status": "reported", "child_name": child_name}
-
-
-@router.get("")
-async def get_alerts(current_user=None, limit: int = 50):
-    """Liste toutes les alertes (non lues en premier)."""
-    from .auth import get_current_user
-    from fastapi import Depends
-    db = get_db()
-    # Récupérer les enfants du parent (nécessite auth → voir home_screen)
-    # Cet endpoint est appelé via le parent app avec son token
-    return {"info": "Use /notifications/history for authenticated access"}
 
 
 @router.get("/all")
@@ -130,11 +118,11 @@ async def get_all_alerts_for_parent(
     db = get_db()
     children = await db.children.find({"parent_email": parent_email}).to_list(length=None)
     child_ids = [str(c["_id"]) for c in children]
-    alerts = await db.alerts.find(
+    result = await db.alerts.find(
         {"child_id": {"$in": child_ids}}
     ).sort("timestamp", -1).limit(limit).to_list(length=limit)
-    for a in alerts:
+    for a in result:
         a["_id"] = str(a["_id"])
         if "timestamp" in a and hasattr(a["timestamp"], "isoformat"):
             a["timestamp"] = a["timestamp"].isoformat()
-    return alerts
+    return result

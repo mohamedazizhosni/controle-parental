@@ -27,6 +27,7 @@ services:
       MONGO_URL: mongodb://${MONGO_USER:-admin}:${MONGO_PASS:-changeme}@mongodb:27017
       SECRET_KEY: ${JWT_SECRET:-default-secret-key}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost}
+      FIREBASE_SERVICE_ACCOUNT: /app/firebase-service-account.json
     volumes:
       - ./backend:/app
       - ia_config:/app/ia_config

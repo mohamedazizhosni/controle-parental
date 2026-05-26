@@ -12,10 +12,9 @@ logger = logging.getLogger("notifications")
 
 router = APIRouter(prefix="/notifications", tags=["Notifications"])
 
-# Gestionnaire de connexions WebSocket
+
 class ConnectionManager:
     def __init__(self):
-        # parent_email -> Set[WebSocket]
         self.active_connections: Dict[str, Set[WebSocket]] = {}
 
     async def connect(self, websocket: WebSocket, parent_email: str):
@@ -33,7 +32,6 @@ class ConnectionManager:
         logger.info(f"Parent {parent_email} déconnecté")
 
     async def send_personal_message(self, message: dict, parent_email: str):
-        """Envoyer un message à un parent spécifique."""
         if parent_email in self.active_connections:
             dead_connections = set()
             for connection in self.active_connections[parent_email]:
@@ -46,11 +44,10 @@ class ConnectionManager:
                 self.active_connections[parent_email].discard(dead)
 
     async def broadcast_to_parent(self, parent_email: str, notification: dict):
-        """Envoyer une notification à toutes les connexions d'un parent."""
         message = {
             "type": "notification",
             "timestamp": datetime.utcnow().isoformat(),
-            "data": notification
+            "data": notification,
         }
         await self.send_personal_message(message, parent_email)
 
@@ -60,19 +57,26 @@ class ConnectionManager:
             and len(self.active_connections[parent_email]) > 0
         )
 
+
 manager = ConnectionManager()
 
 
-# Correction : fonction helper pour envoyer un push FCM via firebase_admin
-# Utilisée en fallback quand le parent n'est pas connecté via WebSocket
-async def _send_fcm_push(db, parent_email: str, title: str, body: str, data: dict = None):
-    """Envoyer un push FCM si le token est enregistré."""
+async def _send_fcm_push(
+    db, parent_email: str, title: str, body: str, data: dict = None
+):
+    """Envoyer un push FCM si le token est enregistré et firebase_admin initialisé."""
     try:
         import firebase_admin
         from firebase_admin import messaging as fb_messaging
 
+        # Vérifier que firebase_admin est bien initialisé
+        if not firebase_admin._apps:
+            logger.warning("[FCM] firebase_admin non initialisé — push ignoré.")
+            return
+
         record = await db.fcm_tokens.find_one({"parent_email": parent_email})
         if not record or not record.get("token"):
+            logger.warning(f"[FCM] Aucun token FCM pour {parent_email}")
             return
 
         message = fb_messaging.Message(
@@ -88,17 +92,14 @@ async def _send_fcm_push(db, parent_email: str, title: str, body: str, data: dic
             ),
         )
         fb_messaging.send(message)
-        logger.info(f"FCM push envoyé à {parent_email}")
+        logger.info(f"[FCM] Push envoyé à {parent_email} — {title}")
     except Exception as e:
-        logger.warning(f"FCM push échoué pour {parent_email}: {e}")
+        logger.warning(f"[FCM] Push échoué pour {parent_email}: {e}")
 
 
 @router.websocket("/ws/{token}")
 async def websocket_endpoint(websocket: WebSocket, token: str):
-    """
-    WebSocket endpoint pour notifications temps réel.
-    Les parents se connectent avec leur JWT token.
-    """
+    """WebSocket endpoint pour notifications temps réel."""
     try:
         from ....core.security import decode_access_token
         payload = decode_access_token(token)
@@ -118,7 +119,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
             "type": "connected",
             "message": "Connecté au service de notifications",
             "parent_email": parent_email,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().isoformat(),
         })
 
         while True:
@@ -128,22 +129,21 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
                 if message.get("type") == "ping":
                     await websocket.send_json({
                         "type": "pong",
-                        "timestamp": datetime.utcnow().isoformat()
+                        "timestamp": datetime.utcnow().isoformat(),
                     })
             except WebSocketDisconnect:
                 break
-            except Exception as e:
-                logger.warning(f"Erreur WebSocket pour {parent_email}: {e}")
+            except Exception:
                 break
 
     except Exception as e:
         logger.error(f"Erreur connexion WebSocket: {e}")
         try:
             await websocket.close(code=1011, reason="Internal error")
-        except:
+        except Exception:
             pass
     finally:
-        if 'parent_email' in locals():
+        if "parent_email" in locals():
             manager.disconnect(websocket, parent_email)
 
 
@@ -152,9 +152,9 @@ async def send_notification(
     child_id: str,
     notification_type: str,
     message: str,
-    data: dict = None
+    data: dict = None,
 ):
-    """API pour envoyer des notifications (appelé par d'autres services)."""
+    """API pour envoyer des notifications."""
     db = get_db()
 
     if not ObjectId.is_valid(child_id):
@@ -172,23 +172,20 @@ async def send_notification(
         "child_name": child.get("name"),
         "type": notification_type,
         "message": message,
+        "title": message,
         "data": data or {},
         "timestamp": datetime.utcnow().isoformat(),
-        "read": False
+        "read": False,
     }
 
     await db.notifications.insert_one(notification)
-
-    # Envoyer via WebSocket si le parent est connecté
     await manager.broadcast_to_parent(parent_email, notification)
 
-    # Correction : envoyer un push FCM si le parent n'est PAS connecté via WebSocket
-    # Avant : si le parent avait l'app fermée, aucune notification n'arrivait
     if not manager.is_connected(parent_email):
         await _send_fcm_push(
             db,
             parent_email,
-            title=f"Alerte - {child.get('name', '')}",
+            title=f"Alerte — {child.get('name', '')}",
             body=message,
             data={"type": notification_type, "child_id": child_id, "route": "/alerts"},
         )
@@ -196,7 +193,7 @@ async def send_notification(
     return {
         "status": "sent",
         "parent_email": parent_email,
-        "ws_connected": manager.is_connected(parent_email)
+        "ws_connected": manager.is_connected(parent_email),
     }
 
 
@@ -204,9 +201,8 @@ async def send_notification(
 async def get_notification_history(
     current_user=Depends(get_current_user),
     limit: int = 50,
-    unread_only: bool = False
+    unread_only: bool = False,
 ):
-    """Récupérer l'historique des notifications."""
     db = get_db()
 
     children = await db.children.find(
@@ -233,9 +229,8 @@ async def get_notification_history(
 @router.put("/{notification_id}/read")
 async def mark_notification_read(
     notification_id: str,
-    current_user=Depends(get_current_user)
+    current_user=Depends(get_current_user),
 ):
-    """Marquer une notification comme lue."""
     db = get_db()
 
     if not ObjectId.is_valid(notification_id):
@@ -243,7 +238,7 @@ async def mark_notification_read(
 
     result = await db.notifications.update_one(
         {"_id": ObjectId(notification_id)},
-        {"$set": {"read": True}}
+        {"$set": {"read": True}},
     )
 
     if result.modified_count == 0:
@@ -252,13 +247,12 @@ async def mark_notification_read(
     return {"status": "ok"}
 
 
-# Fonction helper pour envoyer des notifications depuis d'autres endpoints
 async def send_notification_to_parent(
     db,
     child_id: str,
     notification_type: str,
     message: str,
-    data: dict = None
+    data: dict = None,
 ):
     """Fonction utilitaire pour envoyer des notifications depuis le code."""
     child = await db.children.find_one({"_id": ObjectId(child_id)})
@@ -273,20 +267,20 @@ async def send_notification_to_parent(
         "child_name": child.get("name"),
         "type": notification_type,
         "message": message,
+        "title": message,
         "data": data or {},
         "timestamp": datetime.utcnow().isoformat(),
-        "read": False
+        "read": False,
     }
 
     await db.notifications.insert_one(notification)
     await manager.broadcast_to_parent(parent_email, notification)
 
-    # Correction : fallback FCM si WebSocket absent
     if not manager.is_connected(parent_email):
         await _send_fcm_push(
             db,
             parent_email,
-            title=f"Alerte - {child.get('name', '')}",
+            title=f"Alerte — {child.get('name', '')}",
             body=message,
             data={"type": notification_type, "child_id": child_id, "route": "/alerts"},
         )

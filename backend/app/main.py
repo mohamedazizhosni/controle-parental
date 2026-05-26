@@ -1,3 +1,5 @@
+import os
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .api.v1.endpoints import (
@@ -7,6 +9,8 @@ from .api.v1.endpoints import (
 )
 from .db.mongodb import connect_to_mongo, close_mongo_connection
 from .core.config import settings
+
+logger = logging.getLogger("main")
 
 app = FastAPI(title="Parental Control API", version="1.0.0")
 
@@ -26,13 +30,42 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "x-internal-secret"],
 )
 
+
+def _init_firebase():
+    """Initialise firebase_admin une seule fois au démarrage du backend."""
+    service_account_path = os.getenv(
+        "FIREBASE_SERVICE_ACCOUNT",
+        "/app/firebase-service-account.json",
+    )
+    if not os.path.exists(service_account_path):
+        logger.warning(
+            f"[FCM] Fichier service account introuvable : {service_account_path}. "
+            "Les push FCM seront désactivés."
+        )
+        return
+    try:
+        import firebase_admin
+        from firebase_admin import credentials
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(service_account_path)
+            firebase_admin.initialize_app(cred)
+            logger.info("[FCM] firebase_admin initialisé avec succès.")
+        else:
+            logger.info("[FCM] firebase_admin déjà initialisé.")
+    except Exception as e:
+        logger.error(f"[FCM] Erreur initialisation firebase_admin : {e}")
+
+
 @app.on_event("startup")
 async def startup():
     await connect_to_mongo()
+    _init_firebase()
+
 
 @app.on_event("shutdown")
 async def shutdown():
     await close_mongo_connection()
+
 
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(children.router, prefix="/api/v1")
@@ -49,13 +82,16 @@ app.include_router(app_usage.router, prefix="/api/v1")
 app.include_router(blocklist.router, prefix="/api/v1")
 app.include_router(alerts.router, prefix="/api/v1")
 
+
 @app.get("/")
 async def root():
     return {"message": "Parental Control API is running"}
 
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
 
 @app.get("/api/v1/health")
 async def api_health():
