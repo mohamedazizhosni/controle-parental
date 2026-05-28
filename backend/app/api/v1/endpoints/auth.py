@@ -20,7 +20,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     user = await db.users.find_one({"email": email})
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
-    user["token"] = token  
+    user["token"] = token
     return user
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
@@ -49,8 +49,14 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     access_token = create_access_token(data={"sub": user["email"]})
     return {"access_token": access_token, "token_type": "bearer"}
 
+@router.post("/refresh", response_model=Token)
+async def refresh_token(current_user=Depends(get_current_user)):
+    """Renouvelle le token JWT pour un utilisateur déjà authentifié."""
+    new_token = create_access_token(data={"sub": current_user["email"]})
+    return {"access_token": new_token, "token_type": "bearer"}
+
 @router.get("/me")
-async def read_users_me(current_user = Depends(get_current_user)):
+async def read_users_me(current_user=Depends(get_current_user)):
     return {
         "email": current_user["email"],
         "full_name": current_user["full_name"],
