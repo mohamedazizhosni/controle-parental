@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api.v1.endpoints import (
     auth, children, pairing, session,
     ia_config, devices, history, notifications,
-    stats, fcm, apps, app_usage, blocklist, alerts
+    stats, fcm, apps, app_usage, blocklist, alerts, master_code
 )
 from .db.mongodb import connect_to_mongo, close_mongo_connection
 from .core.config import settings
@@ -32,7 +32,6 @@ app.add_middleware(
 
 
 def _init_firebase():
-    """Initialise firebase_admin une seule fois au démarrage du backend."""
     service_account_path = os.getenv(
         "FIREBASE_SERVICE_ACCOUNT",
         "/app/firebase-service-account.json",
@@ -67,31 +66,30 @@ async def shutdown():
     await close_mongo_connection()
 
 
-app.include_router(auth.router, prefix="/api/v1")
-app.include_router(children.router, prefix="/api/v1")
-app.include_router(pairing.router, prefix="/api/v1")
-app.include_router(session.router, prefix="/api/v1")
-app.include_router(ia_config.router, prefix="/api/v1")
-app.include_router(devices.router, prefix="/api/v1")
-app.include_router(history.router, prefix="/api/v1")
+app.include_router(auth.router,          prefix="/api/v1")
+app.include_router(children.router,      prefix="/api/v1")
+app.include_router(pairing.router,       prefix="/api/v1")
+app.include_router(session.router,       prefix="/api/v1")
+app.include_router(ia_config.router,     prefix="/api/v1")
+app.include_router(devices.router,       prefix="/api/v1")
+app.include_router(history.router,       prefix="/api/v1")
 app.include_router(notifications.router, prefix="/api/v1")
-app.include_router(stats.router, prefix="/api/v1")
-app.include_router(fcm.router, prefix="/api/v1")
-app.include_router(apps.router, prefix="/api/v1")
-app.include_router(app_usage.router, prefix="/api/v1")
-app.include_router(blocklist.router, prefix="/api/v1")
-app.include_router(alerts.router, prefix="/api/v1")
+app.include_router(stats.router,         prefix="/api/v1")
+app.include_router(fcm.router,           prefix="/api/v1")
+app.include_router(apps.router,          prefix="/api/v1")
+app.include_router(app_usage.router,     prefix="/api/v1")
+app.include_router(blocklist.router,     prefix="/api/v1")
+app.include_router(alerts.router,        prefix="/api/v1")
+app.include_router(master_code.router,   prefix="/api/v1")   # ← NOUVEAU
 
 
 @app.get("/")
 async def root():
     return {"message": "Parental Control API is running"}
 
-
 @app.get("/health")
 async def health():
     return {"status": "ok"}
-
 
 @app.get("/api/v1/health")
 async def api_health():

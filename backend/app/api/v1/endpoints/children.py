@@ -174,6 +174,7 @@ async def send_alert(alert: Alert):
 
 @router.get("/alerts")
 async def get_alerts(current_user = Depends(get_current_user), unread_only: bool = False):
+    """Toutes les alertes du parent — tous enfants confondus."""
     db = get_db()
     children = await db.children.find({"parent_email": current_user["email"]}).to_list(None)
     child_ids = [str(c["_id"]) for c in children]
@@ -190,6 +191,38 @@ async def get_alerts(current_user = Depends(get_current_user), unread_only: bool
             a["timestamp"] = a["timestamp"].isoformat()
         if not a.get("child_name") and a.get("child_id"):
             a["child_name"] = child_name_map.get(a["child_id"], "Enfant")
+    return alerts
+
+
+@router.get("/alerts/{child_id}")
+async def get_alerts_for_child(
+    child_id: str,
+    current_user = Depends(get_current_user),
+    unread_only: bool = False,
+    limit: int = 200,
+):
+    """Alertes filtrées pour un enfant spécifique."""
+    db = get_db()
+    if not ObjectId.is_valid(child_id):
+        raise HTTPException(400, "Invalid child id")
+    profile = await db.children.find_one(
+        {"_id": ObjectId(child_id), "parent_email": current_user["email"]}
+    )
+    if not profile:
+        raise HTTPException(404, "Child not found")
+
+    query = {"child_id": child_id}
+    if unread_only:
+        query["read"] = False
+
+    cursor = db.alerts.find(query).sort("timestamp", -1)
+    alerts = await cursor.to_list(length=limit)
+    for a in alerts:
+        a["_id"] = str(a["_id"])
+        if "timestamp" in a and hasattr(a["timestamp"], "isoformat"):
+            a["timestamp"] = a["timestamp"].isoformat()
+        if not a.get("child_name"):
+            a["child_name"] = profile.get("name", "Enfant")
     return alerts
 
 
