@@ -77,11 +77,13 @@ async def verify_pairing_code(request: VerifyPairingRequest):
     device_mode = profile.get("device_mode", "shared")
     child_id = str(profile["_id"])
 
+    # Stocker child_id ET active_child_id pour compatibilité avec alerts.py
     await db.devices.update_one(
         {"device_name": device_name},
         {"$set": {
             "parent_email": pairing["parent_email"],
             "child_id": child_id,
+            "active_child_id": child_id,
             "enabled": True,
             "device_mode": device_mode,
             "device_type": request.device_type,
@@ -90,7 +92,6 @@ async def verify_pairing_code(request: VerifyPairingRequest):
     )
     await db.sessions.delete_many({"device_name": device_name})
 
-    # Générer un token JWT pour l'agent Android
     access_token = create_access_token(data={"sub": pairing["parent_email"]})
 
     return {

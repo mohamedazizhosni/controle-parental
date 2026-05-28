@@ -15,6 +15,7 @@ router = APIRouter(prefix="/notifications", tags=["Notifications"])
 
 class ConnectionManager:
     def __init__(self):
+        # parent_email -> Set[WebSocket]
         self.active_connections: Dict[str, Set[WebSocket]] = {}
 
     async def connect(self, websocket: WebSocket, parent_email: str):
@@ -32,6 +33,7 @@ class ConnectionManager:
         logger.info(f"Parent {parent_email} déconnecté")
 
     async def send_personal_message(self, message: dict, parent_email: str):
+        """Envoyer un message à un parent spécifique."""
         if parent_email in self.active_connections:
             dead_connections = set()
             for connection in self.active_connections[parent_email]:
@@ -44,6 +46,7 @@ class ConnectionManager:
                 self.active_connections[parent_email].discard(dead)
 
     async def broadcast_to_parent(self, parent_email: str, notification: dict):
+        """Envoyer une notification à toutes les connexions d'un parent."""
         message = {
             "type": "notification",
             "timestamp": datetime.utcnow().isoformat(),
@@ -61,22 +64,19 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-async def _send_fcm_push(
-    db, parent_email: str, title: str, body: str, data: dict = None
-):
-    """Envoyer un push FCM si le token est enregistré et firebase_admin initialisé."""
+async def _send_fcm_push(db, parent_email: str, title: str, body: str, data: dict = None):
+    """Envoyer un push FCM au token enregistré pour ce parent."""
     try:
         import firebase_admin
         from firebase_admin import messaging as fb_messaging
 
-        # Vérifier que firebase_admin est bien initialisé
         if not firebase_admin._apps:
-            logger.warning("[FCM] firebase_admin non initialisé — push ignoré.")
+            logger.warning("[FCM] firebase_admin non initialisé — push ignoré")
             return
 
         record = await db.fcm_tokens.find_one({"parent_email": parent_email})
         if not record or not record.get("token"):
-            logger.warning(f"[FCM] Aucun token FCM pour {parent_email}")
+            logger.warning(f"[FCM] Aucun token FCM enregistré pour {parent_email}")
             return
 
         message = fb_messaging.Message(
@@ -179,16 +179,18 @@ async def send_notification(
     }
 
     await db.notifications.insert_one(notification)
+
+    # WebSocket : notification instantanée si app ouverte
     await manager.broadcast_to_parent(parent_email, notification)
 
-    if not manager.is_connected(parent_email):
-        await _send_fcm_push(
-            db,
-            parent_email,
-            title=f"Alerte — {child.get('name', '')}",
-            body=message,
-            data={"type": notification_type, "child_id": child_id, "route": "/alerts"},
-        )
+    # FCM : envoyé toujours pour garantir la réception (app fermée ou arrière-plan)
+    await _send_fcm_push(
+        db,
+        parent_email,
+        title=f"Alerte — {child.get('name', '')}",
+        body=message,
+        data={"type": notification_type, "child_id": child_id, "route": "/alerts"},
+    )
 
     return {
         "status": "sent",
@@ -274,13 +276,15 @@ async def send_notification_to_parent(
     }
 
     await db.notifications.insert_one(notification)
+
+    # WebSocket : notification instantanée si app ouverte
     await manager.broadcast_to_parent(parent_email, notification)
 
-    if not manager.is_connected(parent_email):
-        await _send_fcm_push(
-            db,
-            parent_email,
-            title=f"Alerte — {child.get('name', '')}",
-            body=message,
-            data={"type": notification_type, "child_id": child_id, "route": "/alerts"},
-        )
+    # FCM : envoyé toujours pour garantir la réception
+    await _send_fcm_push(
+        db,
+        parent_email,
+        title=f"Alerte — {child.get('name', '')}",
+        body=message,
+        data={"type": notification_type, "child_id": child_id, "route": "/alerts"},
+    )
