@@ -7,6 +7,7 @@ import urllib.request
 from zoneinfo import ZoneInfo
 from ....db.mongodb import get_db
 from .auth import get_current_user
+from ....core.security import verify_password
 
 router = APIRouter(prefix="/devices", tags=["Devices"])
 
@@ -299,3 +300,61 @@ async def ip_to_child(ip: str):
         return {"child_id": None}
     child_id = device.get("active_child_id")
     return {"child_id": child_id}
+
+
+@router.post("/uninstall")
+async def uninstall_device(payload: dict):
+    """
+    Vérifie le code maître puis autorise la désinstallation de l'agent.
+    Appelé par l'agent Windows ou Android sans JWT parent.
+    Payload: { "device_name": "...", "master_code": "XXXXXXXX" }
+    """
+    device_name = payload.get("device_name", "").strip()
+    master_code = payload.get("master_code", "").strip().upper()
+
+    if not device_name or not master_code:
+        raise HTTPException(400, "device_name et master_code requis")
+
+    db = get_db()
+
+    # Trouver l'appareil
+    device = await db.devices.find_one({"device_name": device_name})
+    if not device:
+        # Lister les appareils connus pour aider au diagnostic
+        all_devices = await db.devices.find({}, {"device_name": 1}).to_list(length=50)
+        known = [d.get("device_name", "") for d in all_devices]
+        raise HTTPException(404, f"Appareil inconnu : '{device_name}'. Appareils enregistrés : {known}")
+
+    # Trouver le parent via l'email associé à l'appareil
+    parent_email = device.get("parent_email")
+    if not parent_email:
+        child_id = device.get("active_child_id") or device.get("child_id")
+        if child_id and ObjectId.is_valid(child_id):
+            child = await db.children.find_one({"_id": ObjectId(child_id)})
+            if child:
+                parent_email = child.get("parent_email")
+
+    if not parent_email:
+        raise HTTPException(400, "Parent introuvable pour cet appareil")
+
+    user = await db.users.find_one({"email": parent_email})
+    if not user or not user.get("master_code_hash"):
+        raise HTTPException(
+            400,
+            "Aucun code maître configuré. Ouvrez l'app parent → Code maître → Générer."
+        )
+
+    if not verify_password(master_code, user["master_code_hash"]):
+        raise HTTPException(403, "Code maître incorrect")
+
+    # Marquer l'appareil comme désinstallé
+    await db.devices.update_one(
+        {"device_name": device_name},
+        {"$set": {
+            "active_child_id": None,
+            "uninstalled_at": datetime.utcnow(),
+            "status": "uninstalled"
+        }}
+    )
+
+    return {"success": True, "message": "Désinstallation autorisée"}
