@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends, Request
-from datetime import datetime
+from datetime import datetime, timedelta
 from pydantic import BaseModel
 from bson import ObjectId
 from typing import Dict, List
@@ -97,8 +97,8 @@ async def log_history(log: HistoryLog, request: Request):
             break
 
     protocol = "HTTPS" if log.url.startswith("https://") else "HTTP"
-
     now = datetime.utcnow()
+
     entry = {
         "child_id": child_id,
         "url": log.url,
@@ -108,13 +108,13 @@ async def log_history(log: HistoryLog, request: Request):
         "blocked": log.blocked,
         "timestamp": now,
         "source_ip": source_ip,
-        "device_name": device.get("device_name")
+        "device_name": device.get("device_name"),
     }
     await db.history.insert_one(entry)
 
     if log.blocked:
         child_doc = None
-        if ObjectId.is_valid(child_id):
+        if child_id and ObjectId.is_valid(child_id):
             child_doc = await db.children.find_one({"_id": ObjectId(child_id)})
         child_name = child_doc.get("name", "Enfant") if child_doc else "Enfant"
 
@@ -133,9 +133,9 @@ async def log_history(log: HistoryLog, request: Request):
 
         parent_email = device.get("parent_email")
         if parent_email:
-            # Envoyer via WebSocket (temps réel si connecté)
             try:
                 from .notifications import manager, _send_fcm_push
+
                 ws_message = {
                     "type": "blocked_site",
                     "child_name": child_name,
@@ -146,22 +146,36 @@ async def log_history(log: HistoryLog, request: Request):
                 }
                 await manager.send_personal_message(ws_message, parent_email)
 
-                # FCM fallback si le parent n'est pas connecté via WebSocket
-                if not manager.is_connected(parent_email):
-                    await _send_fcm_push(
-                        db,
-                        parent_email,
-                        title=f"⚠️ Site bloqué — {child_name}",
-                        body=f"Tentative d'accès à {log.url} ({category})",
-                        data={
-                            "type": "blocked_site",
-                            "child_id": child_id,
-                            "child_name": child_name,
-                            "url": log.url,
-                            "category": category,
-                            "route": "/alerts",
-                        },
-                    )
+                # Déduplication FCM : ne pas renvoyer si la même URL a déjà
+                # généré une notification pour cet enfant dans les 5 dernières minutes.
+                five_minutes_ago = now - timedelta(minutes=5)
+                recent_alert = await db.alerts.find_one({
+                    "child_id": child_id,
+                    "url": log.url,
+                    "alert_type": "blocked_site",
+                    "timestamp": {"$gte": five_minutes_ago},
+                    # Exclure l'alerte qu'on vient d'insérer (elle est la plus récente)
+                    "_id": {"$ne": alert.get("_id")},
+                })
+
+                if recent_alert is None:
+                    # Pas de doublon récent : envoyer la notification FCM
+                    if not manager.is_connected(parent_email):
+                        await _send_fcm_push(
+                            db,
+                            parent_email,
+                            title=f"⚠️ Site bloqué – {child_name}",
+                            body=f"Tentative d'accès à {log.url} ({category})",
+                            data={
+                                "type": "blocked_site",
+                                "child_id": child_id,
+                                "child_name": child_name,
+                                "url": log.url,
+                                "category": category,
+                                "route": "/alerts",
+                            },
+                        )
+                # Si recent_alert existe : doublon dans les 5 min → pas de FCM
             except Exception:
                 pass
 
@@ -170,7 +184,7 @@ async def log_history(log: HistoryLog, request: Request):
 
 @router.get("/all")
 async def get_all_children_history(
-    current_user = Depends(get_current_user),
+    current_user=Depends(get_current_user),
     limit: int = 50
 ):
     """Récupère l'historique de tous les enfants du parent connecté."""
